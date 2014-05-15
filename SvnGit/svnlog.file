@@ -1,0 +1,4033 @@
+Index: trunk/BUILD.txt
+===================================================================
+--- trunk/BUILD.txt	(revision 1564568)
++++ trunk/BUILD.txt	(revision 1564569)
+@@ -12,6 +12,11 @@
+  - C#: mono-devel mono-gmcs nunit
+  - JavaScript: nodejs, npm
+  - Ruby: ruby 1.86 or greater, ruby-dev, gem, rake, echoe, yajl-ruby
++ - Perl: perl 5.8.1 or greater, gmake, Module::Install,
++   Module::Install::ReadmeFromPod, Module::Install::Repository,
++   Math::BigInt, JSON::XS, Try::Tiny, Regexp::Common, Encode,
++   IO::String, Object::Tiny, Compress::ZLib, Test::More,
++   Test::Exception, Test::Pod
+  - Apache Ant 1.7
+  - Apache Forrest 0.8 (for documentation)
+  - md5sum, sha1sum, used by top-level dist target
+Index: trunk/lang/perl/t/05_protocol.t
+===================================================================
+--- trunk/lang/perl/t/05_protocol.t	(revision 0)
++++ trunk/lang/perl/t/05_protocol.t	(revision 1564569)
+@@ -0,0 +1,76 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++#!/usr/bin/env perl
++
++use strict;
++use warnings;
++use Test::Exception;
++use Test::More tests => 18;
++
++use_ok 'Avro::Protocol';
++
++{
++    my $spec_proto = <<EOJ;
++{
++"namespace": "com.acme",
++"protocol": "HelloWorld",
++"doc": "Protocol Greetings",
++
++"types": [
++    {"name": "Greeting", "type": "record", "fields": [
++        {"name": "message", "type": "string"}]},
++    {"name": "Curse", "type": "error", "fields": [
++        {"name": "message", "type": "string"}]}
++],
++
++"messages": {
++    "hello": {
++    "doc": "Say hello.",
++    "request": [{"name": "greeting", "type": "Greeting" }],
++    "response": "Greeting",
++    "errors": ["Curse"]
++    }
++}
++}
++EOJ
++    my $p = Avro::Protocol->parse($spec_proto);
++    ok $p, "proto returned";
++    isa_ok $p, 'Avro::Protocol';
++    is $p->fullname, "com.acme.HelloWorld", "fullname";
++    is $p->name, "HelloWorld", "name";
++    is $p->namespace, "com.acme", "namespace";
++
++    is $p->doc, "Protocol Greetings", "doc";
++
++    isa_ok $p->types, 'HASH';
++    isa_ok $p->types->{Greeting}, 'Avro::Schema::Record';
++    isa_ok $p->types->{Greeting}->fields_as_hash
++           ->{message}{type}, 'Avro::Schema::Primitive';
++
++    isa_ok $p->messages->{hello}, "Avro::Protocol::Message";
++    is $p->messages->{hello}->doc, "Say hello.";
++    isa_ok $p->messages->{hello}->errors, "Avro::Schema::Union";
++    isa_ok $p->messages->{hello}->response, "Avro::Schema::Record";
++    my $req_params = $p->messages->{hello}->request;
++    isa_ok $req_params, "ARRAY";
++    is scalar @$req_params, 1, "one parameter to hello message";
++    is $req_params->[0]->{name}, "greeting", "greeting field";
++    is $req_params->[0]->{type}, $p->types->{Greeting}, "same Schema type";
++}
++
++done_testing;
+Index: trunk/lang/perl/t/02_bin_encode.t
+===================================================================
+--- trunk/lang/perl/t/02_bin_encode.t	(revision 0)
++++ trunk/lang/perl/t/02_bin_encode.t	(revision 1564569)
+@@ -0,0 +1,146 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++#!/usr/bin/env perl
++
++use strict;
++use warnings;
++use Avro::Schema;
++use Config;
++use Test::More tests => 24;
++use Test::Exception;
++use Math::BigInt;
++
++use_ok 'Avro::BinaryEncoder';
++
++sub primitive_ok {
++    my ($primitive_type, $primitive_val, $expected_enc) = @_;
++
++    my $data;
++    my $meth = "encode_$primitive_type";
++    Avro::BinaryEncoder->$meth(
++        undef, $primitive_val, sub { $data = ${$_[0]} }
++    );
++    is $data, $expected_enc, "primitive $primitive_type encoded correctly";
++    return $data;
++}
++
++## some primitive testing
++{
++    primitive_ok null    =>    undef, '';
++    primitive_ok null    => 'whatev', '';
++
++    ## - high-bit of each byte should be set except for last one
++    ## - rest of bits are:
++    ## - little endian
++    ## - zigzag coded
++    primitive_ok long    =>        0, pack("C*", 0);
++    primitive_ok long    =>        1, pack("C*", 0x2);
++    primitive_ok long    =>       -1, pack("C*", 0x1);
++    primitive_ok int     =>       -1, pack("C*", 0x1);
++    primitive_ok int     =>      -20, pack("C*", 0b0010_0111);
++    primitive_ok int     =>       20, pack("C*", 0b0010_1000);
++    primitive_ok int     =>       63, pack("C*", 0b0111_1110);
++    primitive_ok int     =>       64, pack("C*", 0b1000_0000, 0b0000_0001);
++    my $p =
++    primitive_ok int     =>      -65, pack("C*", 0b1000_0001, 0b0000_0001);
++    primitive_ok int     =>       65, pack("C*", 0b1000_0010, 0b0000_0001);
++    primitive_ok int     =>       99, "\xc6\x01";
++
++    ## BigInt values still work
++    primitive_ok int     => Math::BigInt->new(-65), $p;
++
++    throws_ok {
++        my $toobig;
++        if ($Config{use64bitint}) {
++            $toobig = 1<<32;
++        }
++        else {
++            require Math::BigInt;
++            $toobig = Math::BigInt->new(1)->blsft(32);
++        }
++        primitive_ok int => $toobig, undef;
++    } "Avro::BinaryEncoder::Error", "33 bits";
++
++    throws_ok {
++        primitive_ok int => Math::BigInt->new(1)->blsft(63), undef;
++    } "Avro::BinaryEncoder::Error", "65 bits";
++
++    for (qw(long int)) {
++        dies_ok {
++            primitive_ok $_ =>  "x", undef;
++        } "numeric values only";
++    }
++}
++
++## spec examples
++{
++    my $enc = '';
++    my $schema = Avro::Schema->parse(q({ "type": "string" }));
++    Avro::BinaryEncoder->encode(
++        schema => $schema,
++        data => "foo",
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    is $enc, "\x06\x66\x6f\x6f", "Binary_Encodings.Primitive_Types";
++
++    $schema = Avro::Schema->parse(<<EOJ);
++          {
++          "type": "record",
++          "name": "test",
++          "fields" : [
++          {"name": "a", "type": "long"},
++          {"name": "b", "type": "string"}
++          ]
++          }
++EOJ
++    $enc = '';
++    Avro::BinaryEncoder->encode(
++        schema => $schema,
++        data => { a => 27, b => 'foo' },
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    is $enc, "\x36\x06\x66\x6f\x6f", "Binary_Encodings.Complex_Types.Records";
++
++    $enc = '';
++    $schema = Avro::Schema->parse(q({"type": "array", "items": "long"}));
++    Avro::BinaryEncoder->encode(
++        schema => $schema,
++        data => [3, 27],
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    is $enc, "\x04\x06\x36\x00", "Binary_Encodings.Complex_Types.Arrays";
++
++    $enc = '';
++    $schema = Avro::Schema->parse(q(["string","null"]));
++    Avro::BinaryEncoder->encode(
++        schema => $schema,
++        data => undef,
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    is $enc, "\x02", "Binary_Encodings.Complex_Types.Unions-null";
++
++    $enc = '';
++    Avro::BinaryEncoder->encode(
++        schema => $schema,
++        data => "a",
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    is $enc, "\x00\x02\x61", "Binary_Encodings.Complex_Types.Unions-a";
++}
++
++done_testing;
+Index: trunk/lang/perl/t/00_compile.t
+===================================================================
+--- trunk/lang/perl/t/00_compile.t	(revision 0)
++++ trunk/lang/perl/t/00_compile.t	(revision 1564569)
+@@ -0,0 +1,21 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use strict;
++use Test::More tests => 1;
++
++BEGIN { use_ok 'Avro' }
+Index: trunk/lang/perl/t/04_datafile.t
+===================================================================
+--- trunk/lang/perl/t/04_datafile.t	(revision 0)
++++ trunk/lang/perl/t/04_datafile.t	(revision 1564569)
+@@ -0,0 +1,122 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++#!/usr/bin/env perl
++
++use strict;
++use warnings;
++use Avro::DataFile;
++use Avro::BinaryEncoder;
++use Avro::BinaryDecoder;
++use Avro::Schema;
++use File::Temp;
++use Test::Exception;
++use Test::More tests => 12;
++
++use_ok 'Avro::DataFileReader';
++use_ok 'Avro::DataFileWriter';
++
++my $tmpfh = File::Temp->new(UNLINK => 1);
++
++my $schema = Avro::Schema->parse(<<EOP);
++{ "type": "map", "values": { "type": "array", "items": "string" } }
++EOP
++
++my $write_file = Avro::DataFileWriter->new(
++    fh            => $tmpfh,
++    writer_schema => $schema,
++    metadata      => {
++        some => 'metadata',
++    },
++);
++
++my $data = {
++    a => [ "2.2", "4.4" ],
++    b => [ "2.4", "2", "-4", "4", "5" ],
++    c => [ "0" ],
++};
++
++$write_file->print($data);
++$write_file->flush;
++
++## rewind
++seek $tmpfh, 0, 0;
++my $uncompressed_size = -s $tmpfh;
++
++my $read_file = Avro::DataFileReader->new(
++    fh            => $tmpfh,
++    reader_schema => $schema,
++);
++is $read_file->metadata->{'avro.codec'}, 'null', 'avro.codec';
++is $read_file->metadata->{'some'}, 'metadata', 'custom meta';
++
++my @all = $read_file->all;
++is scalar @all, 1, "one object back";
++is_deeply $all[0], $data, "Our data is intact!";
++
++
++## codec tests
++{
++    throws_ok {
++        Avro::DataFileWriter->new(
++            fh            => File::Temp->new,
++            writer_schema => $schema,
++            codec         => 'unknown',
++        );
++    } "Avro::DataFile::Error::InvalidCodec", "invalid codec";
++
++    ## rewind
++    seek $tmpfh, 0, 0;
++    local $Avro::DataFile::ValidCodec{null} = 0;
++    $read_file = Avro::DataFileReader->new(
++        fh            => $tmpfh,
++        reader_schema => $schema,
++    );
++
++    throws_ok {
++        $read_file->all;
++    } "Avro::DataFile::Error::UnsupportedCodec", "I've removed 'null' :)";
++
++    ## deflate!
++    my $zfh = File::Temp->new(UNLINK => 0);
++    my $write_file = Avro::DataFileWriter->new(
++        fh            => $zfh,
++        writer_schema => $schema,
++        codec         => 'deflate',
++        metadata      => {
++            some => 'metadata',
++        },
++    );
++    $write_file->print($data);
++    $write_file->flush;
++
++    ## rewind
++    seek $zfh, 0, 0;
++
++    my $read_file = Avro::DataFileReader->new(
++        fh            => $zfh,
++        reader_schema => $schema,
++    );
++    is $read_file->metadata->{'avro.codec'}, 'deflate', 'avro.codec';
++    is $read_file->metadata->{'some'}, 'metadata', 'custom meta';
++
++    my @all = $read_file->all;
++    is scalar @all, 1, "one object back";
++    is_deeply $all[0], $data, "Our data is intact!";
++}
++
++done_testing;
+Index: trunk/lang/perl/t/03_bin_decode.t
+===================================================================
+--- trunk/lang/perl/t/03_bin_decode.t	(revision 0)
++++ trunk/lang/perl/t/03_bin_decode.t	(revision 1564569)
+@@ -0,0 +1,251 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++#!/usr/bin/env perl
++
++use strict;
++use warnings;
++use Avro::Schema;
++use Avro::BinaryEncoder;
++use Test::More tests => 21;
++use Test::Exception;
++use IO::String;
++
++use_ok 'Avro::BinaryDecoder';
++
++## spec examples
++{
++    my $enc = "\x06\x66\x6f\x6f";
++    my $schema = Avro::Schema->parse(q({ "type": "string" }));
++    my $reader = IO::String->new($enc);
++    my $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $schema,
++        reader_schema => $schema,
++        reader        => $reader,
++    );
++    is $dec, "foo", "Binary_Encodings.Primitive_Types";
++
++    $schema = Avro::Schema->parse(<<EOJ);
++          {
++          "type": "record",
++          "name": "test",
++          "fields" : [
++          {"name": "a", "type": "long"},
++          {"name": "b", "type": "string"}
++          ]
++          }
++EOJ
++    $reader = IO::String->new("\x36\x06\x66\x6f\x6f");
++    $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $schema,
++        reader_schema => $schema,
++        reader        => $reader,
++    );
++    is_deeply $dec, { a => 27, b => 'foo' },
++                    "Binary_Encodings.Complex_Types.Records";
++
++    $reader = IO::String->new("\x04\x06\x36\x00");
++    $schema = Avro::Schema->parse(q({"type": "array", "items": "long"}));
++    $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $schema,
++        reader_schema => $schema,
++        reader        => $reader,
++    );
++    is_deeply $dec, [3, 27], "Binary_Encodings.Complex_Types.Arrays";
++
++    $reader = IO::String->new("\x02");
++    $schema = Avro::Schema->parse(q(["string","null"]));
++    $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $schema,
++        reader_schema => $schema,
++        reader         => $reader,
++    );
++    is $dec, undef, "Binary_Encodings.Complex_Types.Unions-null";
++
++    $reader =  IO::String->new("\x00\x02\x61");
++    $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $schema,
++        reader_schema => $schema,
++        reader        => $reader,
++    );
++    is $dec, "a", "Binary_Encodings.Complex_Types.Unions-a";
++}
++
++## enum schema resolution
++{
++
++    my $w_enum = Avro::Schema->parse(<<EOP);
++{ "type": "enum", "name": "enum", "symbols": [ "a", "b", "c", "\$", "z" ] }
++EOP
++    my $r_enum = Avro::Schema->parse(<<EOP);
++{ "type": "enum", "name": "enum", "symbols": [ "\$", "b", "c", "d" ] }
++EOP
++    ok ! !Avro::Schema->match( reader => $r_enum, writer => $w_enum ), "match";
++    my $enc;
++    for my $data (qw/b c $/) {
++        Avro::BinaryEncoder->encode(
++            schema  => $w_enum,
++            data    => $data,
++            emit_cb => sub { $enc = ${ $_[0] } },
++        );
++        my $dec = Avro::BinaryDecoder->decode(
++            writer_schema => $w_enum,
++            reader_schema => $r_enum,
++            reader => IO::String->new($enc),
++        );
++        is $dec, $data, "decoded!";
++    }
++
++    for my $data (qw/a z/) {
++        Avro::BinaryEncoder->encode(
++            schema  => $w_enum,
++            data    => $data,
++            emit_cb => sub { $enc = ${ $_[0] } },
++        );
++        throws_ok { Avro::BinaryDecoder->decode(
++            writer_schema => $w_enum,
++            reader_schema => $r_enum,
++            reader => IO::String->new($enc),
++        )} "Avro::Schema::Error::Mismatch", "schema problem";
++    }
++}
++
++## record resolution
++{
++    my $w_schema = Avro::Schema->parse(<<EOJ);
++          { "type": "record", "name": "test",
++            "fields" : [
++                {"name": "a", "type": "long"},
++                {"name": "bonus", "type": "string"} ]}
++EOJ
++
++    my $r_schema = Avro::Schema->parse(<<EOJ);
++          { "type": "record", "name": "test",
++            "fields" : [
++                {"name": "t", "type": "float", "default": 37.5 },
++                {"name": "a", "type": "long"} ]}
++EOJ
++
++    my $data = { a => 1, bonus => "i" };
++    my $enc = '';
++    Avro::BinaryEncoder->encode(
++        schema  => $w_schema,
++        data    => $data,
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    my $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $w_schema,
++        reader_schema => $r_schema,
++        reader => IO::String->new($enc),
++    );
++    is $dec->{a}, 1, "easy";
++    ok ! exists $dec->{bonus}, "bonus extra field ignored";
++    is $dec->{t}, 37.5, "default t from reader used";
++
++    ## delete the default for t
++    delete $r_schema->fields->[0]{default};
++    throws_ok {
++        Avro::BinaryDecoder->decode(
++            writer_schema => $w_schema,
++            reader_schema => $r_schema,
++            reader => IO::String->new($enc),
++        );
++    } "Avro::Schema::Error::Mismatch", "no default value!";
++}
++
++## union resolution
++{
++    my $w_schema = Avro::Schema->parse(<<EOP);
++[ "string", "null", { "type": "array", "items": "long" }]
++EOP
++    my $r_schema = Avro::Schema->parse(<<EOP);
++[ "boolean", "null", { "type": "array", "items": "double" }]
++EOP
++    my $enc = '';
++    my $data = [ 1, 2, 3, 4, 5, 6 ];
++    Avro::BinaryEncoder->encode(
++        schema  => $w_schema,
++        data    => $data,
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    my $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $w_schema,
++        reader_schema => $r_schema,
++        reader => IO::String->new($enc),
++    );
++
++    is_deeply $dec, $data, "decoded!";
++}
++
++## map resolution
++{
++    my $w_schema = Avro::Schema->parse(<<EOP);
++{ "type": "map", "values": { "type": "array", "items": "string" } }
++EOP
++    my $r_schema = Avro::Schema->parse(<<EOP);
++{ "type": "map", "values": { "type": "array", "items": "int" } }
++EOP
++    my $enc = '';
++    my $data = { "one" => [ "un", "one" ], two => [ "deux", "two" ] };
++
++    Avro::BinaryEncoder->encode(
++        schema  => $w_schema,
++        data    => $data,
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    throws_ok {
++        Avro::BinaryDecoder->decode(
++            writer_schema => $w_schema,
++            reader_schema => $r_schema,
++            reader => IO::String->new($enc),
++        )
++    } "Avro::Schema::Error::Mismatch", "recursively... fails";
++
++    my $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $w_schema,
++        reader_schema => $w_schema,
++        reader => IO::String->new($enc),
++    );
++    is_deeply $dec, $data, "decoded succeeded!";
++}
++
++## schema upgrade
++{
++    my $w_schema = Avro::Schema->parse(<<EOP);
++{ "type": "map", "values": { "type": "array", "items": "int" } }
++EOP
++    my $r_schema = Avro::Schema->parse(<<EOP);
++{ "type": "map", "values": { "type": "array", "items": "float" } }
++EOP
++    my $enc = '';
++    my $data = { "one" => [ 1, 2 ], two => [ 1, 30 ] };
++
++    Avro::BinaryEncoder->encode(
++        schema  => $w_schema,
++        data    => $data,
++        emit_cb => sub { $enc .= ${ $_[0] } },
++    );
++    my $dec = Avro::BinaryDecoder->decode(
++        writer_schema => $w_schema,
++        reader_schema => $w_schema,
++        reader => IO::String->new($enc),
++    );
++    is_deeply $dec, $data, "decoded succeeded! +upgrade";
++    is $dec->{one}[0], 1.0, "kind of dumb test";
++}
++
++done_testing;
+Index: trunk/lang/perl/t/01_schema.t
+===================================================================
+--- trunk/lang/perl/t/01_schema.t	(revision 0)
++++ trunk/lang/perl/t/01_schema.t	(revision 1564569)
+@@ -0,0 +1,472 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use strict;
++use warnings;
++
++use Test::More;
++plan tests => 130;
++use Test::Exception;
++use_ok 'Avro::Schema';
++
++dies_ok { Avro::Schema->new } "Should use parse() or instantiate the subclass";
++
++throws_ok { Avro::Schema->parse(q()) } "Avro::Schema::Error::Parse";
++throws_ok { Avro::Schema->parse(q(test)) } "Avro::Schema::Error::Parse";
++throws_ok { Avro::Schema->parse(q({"type": t})) }
++            "Avro::Schema::Error::Parse";
++throws_ok { Avro::Schema->parse(q({"type": t})) }
++            "Avro::Schema::Error::Parse";
++
++my $s = Avro::Schema->parse(q("string"));
++isa_ok $s, 'Avro::Schema::Base';
++isa_ok $s, 'Avro::Schema::Primitive',
++is $s->type, "string", "type is string";
++
++my $s2 = Avro::Schema->parse(q({"type": "string"}));
++isa_ok $s2, 'Avro::Schema::Primitive';
++is $s2->type, "string", "type is string";
++is $s, $s2, "string Schematas are singletons";
++
++## Records
++{
++    my $s3 = Avro::Schema::Record->new(
++        struct => {
++            name => 'saucisson',
++            fields => [
++                { name => 'a', type => 'long'   },
++                { name => 'b', type => 'string' },
++            ],
++        },
++    );
++
++    isa_ok $s3, 'Avro::Schema::Record';
++    is $s3->type, 'record', "this is a record type";
++    is $s3->fullname, 'saucisson', "correct name";
++    is $s3->fields->[0]{name}, 'a', 'a';
++    is $s3->fields->[0]{type}, Avro::Schema::Primitive->new(type => 'long'), 'long';
++    is $s3->fields->[1]{name}, 'b', 'b';
++    is $s3->fields->[1]{type}, Avro::Schema::Primitive->new(type => 'string'), 'str';
++
++    ## self-reference
++    $s3 = Avro::Schema::Record->new(
++        struct => {
++            name => 'saucisson',
++            fields => [
++                { name => 'a', type => 'long'      },
++                { name => 'b', type => 'saucisson' },
++            ],
++        },
++    );
++    isa_ok $s3, 'Avro::Schema::Record';
++    is $s3->fullname, 'saucisson', "correct name";
++    is $s3->fields->[0]{name}, 'a', 'a';
++    is $s3->fields->[0]{type}, Avro::Schema::Primitive->new(type => 'long'), 'long';
++    is $s3->fields->[1]{name}, 'b', 'b';
++    is $s3->fields->[1]{type}, $s3, 'self!';
++
++    ## serialize
++    my $string = $s3->to_string;
++    like $string, qr/saucisson/, "generated string has 'saucisson'";
++    my $s3bis = Avro::Schema->parse($string);
++    is_deeply $s3bis->to_struct, $s3->to_struct,
++        'regenerated structure matches original';
++
++    ## record fields can have defaults
++    my @good_ints = (2, -1, -(2**31 - 1), 2_147_483_647, "2147483647"  );
++    my @bad_ints = ("", "string", 9.22337204, 9.22337204E10, \"2");
++    my @good_longs = (1, 2, -3);
++    my @bad_longs = (9.22337204, 9.22337204E10 + 0.1, \"2");
++
++    use Config;
++    if ($Config{use64bitint}) {
++        push @bad_ints, (2**32 - 1, 4_294_967_296, 9_223_372_036_854_775_807);
++        push @good_longs, (9_223_372_036_854_775_807, 3e10);
++        push @bad_longs, 9_223_372_036_854_775_808;
++    }
++    else {
++        require Math::BigInt;
++        push @bad_ints, map { Math::BigInt->new($_) }
++            ("0xFFFF_FFFF", "0x1_0000_0000", "0x7FFF_FFFF_FFFF_FFFF");
++        push @good_longs, map { Math::BigInt->new($_) }
++            ("9_223_372_036_854_775_807", "3e10");
++        push @bad_longs, Math::BigInt->new("9_223_372_036_854_775_808");
++    }
++
++    for (@good_ints) {
++        my $s4 = Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'int', default => $_ },
++                ],
++            },
++        );
++        is $s4->fields->[0]{default}, $_, "default $_";
++    }
++    for (@good_longs) {
++        my $s4 = Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'long', default => $_ },
++                ],
++            },
++        );
++        is $s4->fields->[0]{default}, $_, "default $_";
++    }
++    for (@bad_ints) {
++        throws_ok  { Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'int', default => $_ },
++                ],
++            },
++        ) } "Avro::Schema::Error::Parse", "invalid default: $_";
++    }
++    for (@bad_longs) {
++        throws_ok  { Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'long', default => $_ },
++                ],
++            },
++        ) } "Avro::Schema::Error::Parse", "invalid default: $_";
++    }
++
++    ## default of more complex types
++    throws_ok {
++        Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'union', default => 1 },
++                ],
++            },
++        )
++    } "Avro::Schema::Error::Parse", "union don't have default: $@";
++
++    my $s4 = Avro::Schema->parse_struct(
++        {
++            type => 'record',
++            name => 'saucisson',
++            fields => [
++                { name => 'string', type => 'string', default => "something" },
++                { name => 'map', type => { type => 'map', values => 'long' }, default => {a => 2} },
++                { name => 'array', type => { type => 'array', items => 'long' }, default => [1, 2] },
++                { name => 'bytes', type => 'bytes', default => "something" },
++                { name => 'null', type => 'null', default => undef },
++            ],
++        },
++    );
++    is $s4->fields->[0]{default}, "something", "string default";
++    is_deeply $s4->fields->[1]{default}, { a => 2 }, "map default";
++    is_deeply $s4->fields->[2]{default}, [1, 2], "array default";
++    is $s4->fields->[3]{default}, "something", "bytes default";
++    is $s4->fields->[4]{default}, undef, "null default";
++    ## TODO: technically we should verify that default map/array match values
++    ## and items types defined
++
++    ## ordering
++    for (qw(ascending descending ignore)) {
++        my $s4 = Avro::Schema::Record->new(
++            struct => {
++                name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'int', order => $_ },
++                ],
++            },
++        );
++        is $s4->fields->[0]{order}, $_, "order set to $_";
++    }
++    for (qw(DESCEND ascend DESCENDING ASCENDING)) {
++        throws_ok  { Avro::Schema::Record->new(
++            struct => { name => 'saucisson',
++                fields => [
++                    { name => 'a', type => 'long', order => $_ },
++                ],
++            },
++        ) } "Avro::Schema::Error::Parse", "invalid order: $_";
++    }
++}
++
++## Unions
++{
++    my $spec_example = <<EOJ;
++{
++  "type": "record",
++  "name": "LongList",
++  "fields" : [
++    {"name": "value", "type": "long"},
++    {"name": "next", "type": ["LongList", "null"]}
++  ]
++}
++EOJ
++    my $schema = Avro::Schema->parse($spec_example);
++    is $schema->type, 'record', "type record";
++    is $schema->fullname, 'LongList', "name is LongList";
++
++    ## Union checks
++    # can only contain one type
++
++    $s = <<EOJ;
++["null", "null"]
++EOJ
++    throws_ok { Avro::Schema->parse($s) }
++              'Avro::Schema::Error::Parse';
++
++    $s = <<EOJ;
++["long", "string", "float", "string"]
++EOJ
++    throws_ok { Avro::Schema->parse($s) }
++              'Avro::Schema::Error::Parse';
++
++    $s = <<EOJ;
++{
++  "type": "record",
++  "name": "embed",
++  "fields": [
++    {"name": "value", "type":
++        { "type": "record", "name": "rec1",  "fields": [
++            { "name": "str1", "type": "string"}
++        ] }
++    },
++    {"name": "next", "type": ["embed", "rec1", "embed"] }
++  ]
++}
++EOJ
++    throws_ok { Avro::Schema->parse($s) }
++          'Avro::Schema::Error::Parse',
++          'two records with same name in the union';
++
++    $s = <<EOJ;
++{
++  "type": "record",
++  "name": "embed",
++  "fields": [
++    {"name": "value", "type":
++        { "type": "record", "name": "rec1",  "fields": [
++            { "name": "str1", "type": "string"}
++        ] }
++    },
++    {"name": "next", "type": ["embed", "rec1"] }
++  ]
++}
++EOJ
++    lives_ok { Avro::Schema->parse($s) }
++             'two records of different names in the union';
++
++    # cannot directly embed another union
++    $s = <<EOJ;
++["long", ["string", "float"], "string"]
++EOJ
++    throws_ok { Avro::Schema->parse($s) }
++             'Avro::Schema::Error::Parse', "cannot embed union in union";
++}
++
++## Enums!
++{
++    my $s = <<EOJ;
++{ "type": "enum", "name": "theenum", "symbols": [ "A", "B" ]}
++EOJ
++    my $schema = Avro::Schema->parse($s);
++    is $schema->type, 'enum', "enum";
++    is $schema->fullname, 'theenum', "fullname";
++    is $schema->symbols->[0], "A", "symbol A";
++    is $schema->symbols->[1], "B", "symbol B";
++    my $string = $schema->to_string;
++    my $s2 = Avro::Schema->parse($string)->to_struct;
++    is_deeply $s2, $schema->to_struct, "reserialized identically";
++}
++
++## Arrays
++{
++    my $s = <<EOJ;
++{ "type": "array", "items": "string" }
++EOJ
++    my $schema = Avro::Schema->parse($s);
++    is $schema->type, 'array', "array";
++    isa_ok $schema->items, 'Avro::Schema::Primitive';
++    is $schema->items->type, 'string', "type of items is string";
++    my $string = $schema->to_string;
++    my $s2 = Avro::Schema->parse($string);
++    is_deeply $s2, $schema, "reserialized identically";
++}
++
++## Maps
++{
++    my $s = <<EOJ;
++{ "type": "map", "values": "string" }
++EOJ
++    my $schema = Avro::Schema->parse($s);
++    is $schema->type, 'map', "map";
++    isa_ok $schema->values, 'Avro::Schema::Primitive';
++    is $schema->values->type, 'string', "type of values is string";
++    my $string = $schema->to_string;
++    my $s2 = Avro::Schema->parse($string);
++    is_deeply $s2, $schema, "reserialized identically";
++}
++
++## Fixed
++{
++    my $s = <<EOJ;
++{ "type": "fixed", "name": "somefixed", "size": "something" }
++EOJ
++    throws_ok { Avro::Schema->parse($s) } "Avro::Schema::Error::Parse",
++        "size must be an int";
++
++    $s = <<EOJ;
++{ "type": "fixed", "name": "somefixed", "size": -100 }
++EOJ
++    throws_ok { Avro::Schema->parse($s) } "Avro::Schema::Error::Parse",
++        "size must be a POSITIVE int";
++
++    $s = <<EOJ;
++{ "type": "fixed", "name": "somefixed", "size": 0 }
++EOJ
++    throws_ok { Avro::Schema->parse($s) } "Avro::Schema::Error::Parse",
++        "size must be a POSITIVE int > 0";
++
++    $s = <<EOJ;
++{ "type": "fixed", "name": "somefixed", "size": 0.2 }
++EOJ
++    throws_ok { Avro::Schema->parse($s) } "Avro::Schema::Error::Parse",
++        "size must be an int";
++
++    $s = <<EOJ;
++{ "type": "fixed", "name": "somefixed", "size": 5e2 }
++EOJ
++    my $schema = Avro::Schema->parse($s);
++
++    is $schema->type, 'fixed', "fixed";
++    is $schema->fullname, 'somefixed', "name";
++    is $schema->size, 500, "size of fixed";
++    my $string = $schema->to_string;
++    my $s2 = Avro::Schema->parse($string);
++    is_deeply $s2, $schema, "reserialized identically";
++}
++    
++# fixed type referenced using short name without namespace
++{
++    my $s = <<EOJ;
++{
++  "type": "record",
++  "name": "HandshakeRequest", "namespace":"org.apache.avro.ipc",
++  "fields": [
++    {"name": "clientHash",
++     "type": {"type": "fixed", "name": "MD5", "size": 16}},
++    {"name": "clientProtocol", "type": ["null", "string"]},
++    {"name": "serverHash", "type": "MD5"},
++    {"name": "meta", "type": ["null", {"type": "map", "values": "bytes"}]}
++  ]
++}
++EOJ
++    my $schema = Avro::Schema->parse($s);
++    
++    is $schema->type, 'record', 'HandshakeRequest type ok';
++    is $schema->namespace, 'org.apache.avro.ipc', 'HandshakeRequest namespace ok';
++    is $schema->fields->[0]->{type}->{name}, 'MD5', 'HandshakeRequest clientHash type ok';
++    is $schema->fields->[2]->{type}->{name}, 'MD5', 'HandshakeRequest serverHash type ok';
++}
++
++## Schema resolution
++{
++    my @s = split /\n/, <<EOJ;
++{ "type": "int" }
++{ "type": "long" }
++{ "type": "float" }
++{ "type": "double" }
++{ "type": "boolean" }
++{ "type": "null" }
++{ "type": "string" }
++{ "type": "bytes" }
++{ "type": "array", "items": "string" }
++{ "type": "fixed", "size": 1, "name": "fixed" }
++{ "type": "enum", "name": "enum", "symbols": [ "s" ] }
++{ "type": "map", "values": "long" }
++{ "type": "record", "name": "r", "fields": [ { "name": "a", "type": "long" }] }
++EOJ
++    my %s;
++    for (@s) {
++        my $schema = Avro::Schema->parse($_);
++        $s{ $schema->type } = $schema;
++        ok ( Avro::Schema->match(
++                reader => $schema,
++                writer => $schema,
++        ), "identical match!");
++    }
++
++    ## schema promotion
++    match_ok($s{int},    $s{long});
++    match_ok($s{int},    $s{float});
++    match_ok($s{int},    $s{double});
++    match_ok($s{long},   $s{float});
++    match_ok($s{double}, $s{double});
++    match_ok($s{float},  $s{double});
++
++    ## some non promotion
++    match_nok($s{long},    $s{int});
++    match_nok($s{float},   $s{int});
++    match_nok($s{string},  $s{bytes});
++    match_nok($s{bytes},   $s{string});
++    match_nok($s{double},  $s{float});
++    match_nok($s{null},    $s{boolean});
++    match_nok($s{boolean}, $s{int});
++    match_nok($s{boolean}, $s{string});
++    match_nok($s{boolean}, $s{fixed});
++
++    ## complex type details
++    my @alt = split /\n/, <<EOJ;
++{ "type": "array", "items": "int" }
++{ "type": "fixed", "size": 2, "name": "fixed" }
++{ "type": "enum", "name": "enum2", "symbols": [ "b" ] }
++{ "type": "map", "values": "null" }
++{ "type": "record", "name": "r2", "fields": [ { "name": "b", "type": "long" }] }
++EOJ
++    my %alt;
++    for (@alt) {
++        my $schema = Avro::Schema->parse($_);
++        $alt{ $schema->type } = $schema;
++        match_nok($s{$schema->type}, $schema, "not same subtypes/names");
++    }
++}
++
++## union in a record.field
++{
++    my $s = Avro::Schema::Record->new(
++        struct => {
++            name => 'saucisson',
++            fields => [
++                { name => 'a', type => [ 'long', 'null' ] },
++            ],
++        },
++    );
++    isa_ok $s, 'Avro::Schema::Record';
++    is $s->fields->[0]{name}, 'a', 'a';
++    isa_ok $s->fields->[0]{type}, 'Avro::Schema::Union';
++}
++
++sub match_ok {
++    my ($w, $r, $msg) = @_;
++    $msg ||= "match_ok";
++    ok(Avro::Schema->match(reader => $r, writer => $w), $msg);
++}
++
++sub match_nok {
++    my ($w, $r, $msg) = @_;
++    $msg ||= "non matching";
++    ok !Avro::Schema->match(reader => $r, writer => $w), $msg;
++}
++
++done_testing;
+Index: trunk/lang/perl/t/01_names.t
+===================================================================
+--- trunk/lang/perl/t/01_names.t	(revision 0)
++++ trunk/lang/perl/t/01_names.t	(revision 1564569)
+@@ -0,0 +1,168 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use strict;
++use warnings;
++
++use Test::More;
++plan tests => 95;
++use Test::Exception;
++use_ok 'Avro::Schema';
++
++## name validation
++{
++    no warnings 'qw';
++    my @bad_names = qw/0 01 0a $ % $s . - -1 (x) #s # π
++                       @ !q ^f [ ( { } ) ] ~ ` ?a :a ;a 
++                       a- a^ a% a[ .. ... .a .a. a./;
++
++    my @bad_namespaces = @bad_names;
++    for my $name (@bad_names) {
++        throws_ok { Avro::Schema::Record->new(
++            struct => {
++                name => $name,
++                fields => [ { name => 'a', type => 'long' } ],
++            },
++        ) } "Avro::Schema::Error::Name", "bad name: $name";
++    }
++
++    for my $ns (@bad_namespaces) {
++        throws_ok { Avro::Schema::Record->new(
++            struct => {
++                name => 'name',
++                namespace => $ns,
++                fields => [ { name => 'a', type => 'long' } ],
++            },
++        ) } "Avro::Schema::Error::Name", "bad ns: $ns";
++    }
++}
++
++## name + namespace (bullet 1 of spec)
++{
++    my $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'saucisson',
++            namespace => 'dry',
++            fields => [ { name => 'a', type => 'long' } ],
++        },
++    );
++    is $r->fullname, 'dry.saucisson', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++}
++
++## fullname (bullet 2 of spec)
++{
++    my $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'dry.saucisson',
++            fields => [ { name => 'a', type => 'long' } ],
++        },
++    );
++    is $r->fullname, 'dry.saucisson', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++
++    $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'dry.saucisson',
++            namespace => 'archiduchesse.chaussette', ## ignored
++            fields => [ { name => 'a', type => 'long' } ],
++        },
++    );
++    is $r->fullname, 'dry.saucisson', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++}
++
++## name only (bullet 3 of spec)
++{
++    my $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'container',
++            namespace => 'dry',
++            fields => [ {
++                name => 'a', type => {
++                    type => 'record', name => 'saucisson', fields => [
++                        { name => 'aa', type => 'long' },
++                    ],
++                }
++            } ],
++        },
++    );
++    is $r->fullname, 'dry.container', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++    my $subr = $r->fields->[0]{type};
++    is $subr->fullname, 'dry.saucisson', 'dry.saucisson';
++    is $subr->namespace, 'dry', "sub ns is dry";
++
++    $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'dry.container',
++            fields => [ {
++                name => 'a', type => {
++                    type => 'record', name => 'saucisson', fields => [
++                        { name => 'aa', type => 'long' },
++                    ],
++                }
++            } ],
++        },
++    );
++    is $r->fullname, 'dry.container', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++    $subr = $r->fields->[0]{type};
++    is $subr->fullname, 'dry.saucisson', 'dry.saucisson';
++    is $subr->namespace, 'dry', "sub ns is dry";
++
++    $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'dry.container',
++            fields => [ {
++                name => 'a', type => {
++                    type => 'record', name => 'duchesse.saucisson', fields => [
++                        { name => 'aa', type => 'long' },
++                    ],
++                }
++            } ],
++        },
++    );
++    is $r->fullname, 'dry.container', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++    $subr = $r->fields->[0]{type};
++    is $subr->fullname, 'duchesse.saucisson', 'duchesse.saucisson';
++    is $subr->namespace, 'duchesse', "sub ns is duchesse";
++
++    $r = Avro::Schema::Record->new(
++        struct => {
++            name => 'dry.container',
++            fields => [ {
++                name => 'a', type => {
++                    type => 'record',
++                    namespace => 'duc',
++                    name => 'saucisson',
++                    fields => [
++                        { name => 'aa', type => 'long' },
++                    ],
++                }
++            } ],
++        },
++    );
++    is $r->fullname, 'dry.container', "correct fullname";
++    is $r->namespace, 'dry', "ns is dry";
++    $subr = $r->fields->[0]{type};
++    is $subr->fullname, 'duc.saucisson', 'duc.saucisson';
++    is $subr->namespace, 'duc', "sub ns is duc";
++}
++
++done_testing;
+Index: trunk/lang/perl/.gitignore
+===================================================================
+--- trunk/lang/perl/.gitignore	(revision 0)
++++ trunk/lang/perl/.gitignore	(revision 1564569)
+@@ -0,0 +1,10 @@
++MANIFEST.bak
++META.yml
++MYMETA.json
++MYMETA.yml
++Makefile
++Makefile.old
++/inc
++pm_to_blib
++*~
++/blib
+Index: trunk/lang/perl/MANIFEST
+===================================================================
+--- trunk/lang/perl/MANIFEST	(revision 0)
++++ trunk/lang/perl/MANIFEST	(revision 1564569)
+@@ -0,0 +1,32 @@
++.gitignore
++bin/avro-to-json
++Changes
++inc/Module/Install.pm
++inc/Module/Install/Base.pm
++inc/Module/Install/Makefile.pm
++inc/Module/Install/MakeMaker.pm
++inc/Module/Install/Metadata.pm
++inc/Module/Install/ReadmeFromPod.pm
++inc/Module/Install/Repository.pm
++lib/Avro.pm
++lib/Avro/BinaryDecoder.pm
++lib/Avro/BinaryEncoder.pm
++lib/Avro/DataFile.pm
++lib/Avro/DataFileReader.pm
++lib/Avro/DataFileWriter.pm
++lib/Avro/Protocol.pm
++lib/Avro/Protocol/Message.pm
++lib/Avro/Schema.pm
++Makefile.PL
++MANIFEST			This list of files
++META.yml
++NOTICE.txt
++README
++t/00_compile.t
++t/01_names.t
++t/01_schema.t
++t/02_bin_encode.t
++t/03_bin_decode.t
++t/04_datafile.t
++t/05_protocol.t
++xt/pod.t
+Index: trunk/lang/perl/lib/Avro.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro.pm	(revision 1564569)
+@@ -0,0 +1,61 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro;
++
++use strict;
++use 5.008_001;
++our $VERSION = '++MODULE_VERSION++';
++
++1;
++__END__
++
++=encoding utf-8
++
++=head1 NAME
++
++Avro - official Perl API for the Avro serialization and RPC framework
++
++=head1 SYNOPSIS
++
++  use Avro;
++
++=head1 DESCRIPTION
++
++=head1 AUTHOR
++
++Apache Avro <avro-dev@hadoop.apache.org>
++
++=head1 HISTORY
++
++Before contribution to the Apache Avro project, this module was 
++developed by Yann KerhervE<eacute> <yannk@cpank.org> with contributions 
++from Andy Grundman <andy@hybridized.org>, David Bushong 
++<dbushong@mashlogic.com>, and Ilya Martynov <ilya@iponweb.net>.
++
++=head1 COPYRIGHT
++
++Copyright 2014 Apache Software Foundation.
++
++=head1 LICENSE
++
++The Apache License, Version 2.0
++L<http://www.apache.org/licenses/LICENSE-2.0>
++
++=head1 SEE ALSO
++
++=cut
+
+Property changes on: trunk/lang/perl/lib/Avro.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/BinaryEncoder.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/BinaryEncoder.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/BinaryEncoder.pm	(revision 1564569)
+@@ -0,0 +1,288 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::BinaryEncoder;
++use strict;
++use warnings;
++
++use Config;
++use Encode();
++use Error::Simple;
++
++our $max64;
++our $complement = ~0x7F;
++if ($Config{use64bitint}) {
++    $max64 = 9223372036854775807;
++}
++else {
++    require Math::BigInt;
++    $complement = Math::BigInt->new("0b" . ("1" x 57) . ("0" x 7));
++    $max64      = Math::BigInt->new("0b0" . ("1" x 63));
++}
++
++
++=head2 encode(%param)
++
++Encodes the given C<data> according to the given C<schema>, and pass it
++to the C<emit_cb>
++
++Params are:
++
++=over 4
++
++=item * data
++
++The data to encode (can be any perl data structure, but it should match
++schema)
++
++=item * schema
++
++The schema to use to encode C<data>
++
++=item * emit_cb($byte_ref)
++
++The callback that will be invoked with the a reference to the encoded data
++in parameters.
++
++=back
++
++=cut
++
++sub encode {
++    my $class = shift;
++    my %param = @_;
++    my ($schema, $data, $cb) = @param{qw/schema data emit_cb/};
++
++    ## a schema can also be just a string
++    my $type = ref $schema ? $schema->type : $schema;
++
++    ## might want to profile and optimize this
++    my $meth = "encode_$type";
++    $class->$meth($schema, $data, $cb);
++    return;
++}
++
++sub encode_null {
++    $_[3]->(\'');
++}
++
++sub encode_boolean {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    $cb->( $data ? \0x1 : \0x0 );
++}
++
++sub encode_int {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    if ($data !~ /^-?\d+$/ || abs($data) > 0x7fffffff) {
++        throw Avro::BinaryEncoder::Error("int ($data) should be <= 32bits");
++    }
++
++    my $enc = unsigned_varint(zigzag($data));
++    $cb->(\$enc);
++}
++
++sub encode_long {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    if ($data !~ /^-?\d+$/ || abs($data) > $max64) {
++        throw Avro::BinaryEncoder::Error("int ($data) should be <= 64bits");
++    }
++    my $enc = unsigned_varint(zigzag($data));
++    $cb->(\$enc);
++}
++
++sub encode_float {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    my $enc = pack "f<", $data;
++    $cb->(\$enc);
++}
++
++sub encode_double {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    my $enc = pack "d<", $data;
++    $cb->(\$enc);
++}
++
++sub encode_bytes {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    encode_long($class, undef, bytes::length($data), $cb);
++    $cb->(\$data);
++}
++
++sub encode_string {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    my $bytes = Encode::encode_utf8($data);
++    encode_long($class, undef, bytes::length($bytes), $cb);
++    $cb->(\$bytes);
++}
++
++## 1.3.2 A record is encoded by encoding the values of its fields in the order
++## that they are declared. In other words, a record is encoded as just the
++## concatenation of the encodings of its fields. Field values are encoded per
++## their schema.
++sub encode_record {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    for my $field (@{ $schema->fields }) {
++        $class->encode(
++            schema  => $field->{type},
++            data    => $data->{ $field->{name} },
++            emit_cb => $cb,
++        );
++    }
++}
++
++## 1.3.2 An enum is encoded by a int, representing the zero-based position of
++## the symbol in the schema.
++sub encode_enum {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    my $symbols = $schema->symbols_as_hash;
++    my $pos = $symbols->{ $data };
++    throw Avro::BinaryEncoder::Error("Cannot find enum $data")
++        unless defined $pos;
++    $class->encode_int(undef, $pos, $cb);
++}
++
++## 1.3.2 Arrays are encoded as a series of blocks. Each block consists of a
++## long count value, followed by that many array items. A block with count zero
++## indicates the end of the array. Each item is encoded per the array's item
++## schema.
++## If a block's count is negative, its absolute value is used, and the count is
++## followed immediately by a long block size
++
++## maybe here it would be worth configuring what a typical block size should be
++sub encode_array {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++
++    ## FIXME: multiple blocks
++    if (@$data) {
++        $class->encode_long(undef, scalar @$data, $cb);
++        for (@$data) {
++            $class->encode(
++                schema => $schema->items,
++                data => $_,
++                emit_cb => $cb,
++            );
++        }
++    }
++    ## end of the only block
++    $class->encode_long(undef, 0, $cb);
++}
++
++
++## 1.3.2 Maps are encoded as a series of blocks. Each block consists of a long
++## count value, followed by that many key/value pairs. A block with count zero
++## indicates the end of the map. Each item is encoded per the map's value
++## schema.
++##
++## (TODO)
++## If a block's count is negative, its absolute value is used, and the count is
++## followed immediately by a long block size indicating the number of bytes in
++## the block. This block size permits fast skipping through data, e.g., when
++## projecting a record to a subset of its fields.
++sub encode_map {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++
++    my @keys = keys %$data;
++    if (@keys) {
++        $class->encode_long(undef, scalar @keys, $cb);
++        for (@keys) {
++            ## the key
++            $class->encode_string(undef, $_, $cb);
++
++            ## the value
++            $class->encode(
++                schema => $schema->values,
++                data => $data->{$_},
++                emit_cb => $cb,
++            );
++        }
++    }
++    ## end of the only block
++    $class->encode_long(undef, 0, $cb);
++}
++
++## 1.3.2 A union is encoded by first writing a long value indicating the
++## zero-based position within the union of the schema of its value. The value
++## is then encoded per the indicated schema within the union.
++sub encode_union {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    my $idx = 0;
++    my $elected_schema;
++    for my $inner_schema (@{$schema->schemas}) {
++        if ($inner_schema->is_data_valid($data)) {
++            $elected_schema = $inner_schema;
++            last;
++        }
++        $idx++;
++    }
++    unless ($elected_schema) {
++        throw Avro::BinaryEncoder::Error("union cannot validate the data");
++    }
++    $class->encode_long(undef, $idx, $cb);
++    $class->encode(
++        schema => $elected_schema,
++        data => $data,
++        emit_cb => $cb,
++    );
++}
++
++## 1.3.2 Fixed instances are encoded using the number of bytes declared in the
++## schema.
++sub encode_fixed {
++    my $class = shift;
++    my ($schema, $data, $cb) = @_;
++    if (bytes::length $data != $schema->size) {
++        my $s1 = bytes::length $data;
++        my $s2 = $schema->size;
++        throw Avro::BinaryEncoder::Error("Fixed size doesn't match $s1!=$s2");
++    }
++    $cb->(\$data);
++}
++
++sub zigzag {
++    use warnings FATAL => 'numeric';
++    if ( $_[0] >= 0 ) {
++        return $_[0] << 1;
++    }
++    return (($_[0] << 1) ^ -1) | 0x1;
++}
++
++sub unsigned_varint {
++    my @bytes;
++    while ($_[0] & $complement) {           # mask with continuation bit
++        push @bytes, ($_[0] & 0x7F) | 0x80; # out and set continuation bit
++        $_[0] >>= 7;                        # next please
++    }
++    push @bytes, $_[0]; # last byte
++    return pack "C*", @bytes;
++}
++
++package Avro::BinaryEncoder::Error;
++use parent 'Error::Simple';
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/BinaryEncoder.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/DataFileWriter.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/DataFileWriter.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/DataFileWriter.pm	(revision 1564569)
+@@ -0,0 +1,210 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::DataFileWriter;
++use strict;
++use warnings;
++
++use constant DEFAULT_BLOCK_MAX_SIZE => 1024 * 64;
++
++use Object::Tiny qw{
++    fh
++    writer_schema
++    codec
++    metadata
++    block_max_size
++    sync_marker
++};
++
++use Avro::BinaryEncoder;
++use Avro::BinaryDecoder;
++use Avro::DataFile;
++use Avro::Schema;
++use Carp;
++use Error::Simple;
++use IO::Compress::RawDeflate qw(rawdeflate $RawDeflateError);
++
++sub new {
++    my $class = shift;
++    my $datafile = $class->SUPER::new(@_);
++
++    ## default values
++    $datafile->{block_max_size} ||= DEFAULT_BLOCK_MAX_SIZE;
++    $datafile->{sync_marker}    ||= $class->random_sync_marker;
++    $datafile->{metadata}       ||= {};
++    $datafile->{codec}          ||= 'null';
++
++    $datafile->{_current_size}       = 0;
++    $datafile->{_serialized_objects} = [];
++    $datafile->{_compressed_block}   = '';
++
++    croak "Please specify a writer schema" unless $datafile->{writer_schema};
++    croak "writer_schema is invalid"
++        unless eval { $datafile->{writer_schema}->isa("Avro::Schema") };
++
++    throw Avro::DataFile::Error::InvalidCodec($datafile->{codec})
++        unless Avro::DataFile->is_codec_valid($datafile->{codec});
++
++    return $datafile;
++}
++
++## it's not really good random, but it should be good enough
++sub random_sync_marker {
++    my $class = shift;
++    my @r;
++    for (1..16) {
++        push @r, int rand(1<<8);
++    }
++    my $marker = pack "C16", @r;
++    return $marker;
++}
++
++sub print {
++    my $datafile = shift;
++    my $data = shift;
++    my $writer_schema = $datafile->{writer_schema};
++
++    my $enc_ref = '';
++    Avro::BinaryEncoder->encode(
++        schema => $writer_schema,
++        data => $data,
++        emit_cb => sub {
++            $enc_ref .= ${ $_[0] };
++        },
++    );
++    $datafile->buffer_or_print(\$enc_ref);
++}
++
++sub buffer_or_print {
++    my $datafile = shift;
++    my $string_ref = shift;
++
++    my $ser_objects = $datafile->{_serialized_objects};
++    push @$ser_objects, $string_ref;
++
++    if ($datafile->codec eq 'deflate') {
++        my $uncompressed = join('', map { $$_ } @$ser_objects);
++        rawdeflate \$uncompressed => \$datafile->{_compressed_block}
++            or croak "rawdeflate failed: $RawDeflateError";
++        $datafile->{_current_size} =
++            bytes::length($datafile->{_compressed_block});
++    }
++    else {
++      $datafile->{_current_size} += bytes::length($$string_ref);
++    }
++    if ($datafile->{_current_size} > $datafile->{block_max_size}) {
++        ## ok, time to flush!
++        $datafile->_print_block;
++    }
++    return;
++}
++
++sub header {
++    my $datafile = shift;
++
++    my $metadata = $datafile->metadata;
++    my $schema   = $datafile->writer_schema;
++    my $codec    = $datafile->codec;
++
++    for (keys %$metadata) {
++        warn "metadata '$_' is reserved" if /^avro\./;
++    }
++
++    my $encoded_header = '';
++    Avro::BinaryEncoder->encode(
++        schema => $Avro::DataFile::HEADER_SCHEMA,
++        data => {
++            magic => Avro::DataFile->AVRO_MAGIC,
++            meta => {
++                %$metadata,
++                'avro.schema' => $schema->to_string,
++                'avro.codec' => $codec,
++            },
++            sync => $datafile->{sync_marker},
++        },
++        emit_cb => sub { $encoded_header .= ${ $_[0] } },
++    );
++    return $encoded_header;
++}
++
++sub _print_header {
++    my $datafile = shift;
++    $datafile->{_header_printed} = 1;
++    my $fh = $datafile->{fh};
++    print $fh $datafile->header;
++
++    return 1;
++}
++
++sub _print_block {
++    my $datafile = shift;
++    unless ($datafile->{_header_printed}) {
++        $datafile->_print_header;
++    }
++    my $ser_objects = $datafile->{_serialized_objects};
++    my $object_count = scalar @$ser_objects;
++    my $length = $datafile->{_current_size};
++    my $prefix = '';
++
++    for ($object_count, $length) {
++        Avro::BinaryEncoder->encode_long(
++            undef, $_, sub { $prefix .= ${ $_[0] } },
++        );
++    }
++
++    my $sync_marker = $datafile->{sync_marker};
++    my $fh = $datafile->{fh};
++
++    ## alternatively here, we could do n calls to print
++    ## but we'll say that this all write block thing is here to overcome
++    ## any memory issues we could have with deferencing the ser_objects
++    if ($datafile->codec eq 'deflate') {
++        print $fh $prefix, $datafile->{_compressed_block}, $sync_marker;
++    }
++    else {
++        print $fh $prefix, (map { $$_ } @$ser_objects), $sync_marker;
++    }
++
++    ## now reset our internal buffer
++    $datafile->{_serialized_objects} = [];
++    $datafile->{_current_size} = 0;
++    $datafile->{_compressed_block} = '';
++    return 1;
++}
++
++sub flush {
++    my $datafile = shift;
++    $datafile->_print_block if $datafile->{_current_size};
++}
++
++sub close {
++    my $datafile = shift;
++    $datafile->flush;
++    my $fh = $datafile->{fh} or return;
++    close $fh;
++}
++
++sub DESTROY {
++    my $datafile = shift;
++    $datafile->flush;
++    return 1;
++}
++
++package Avro::DataFile::Error::InvalidCodec;
++use parent 'Error::Simple';
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/DataFileWriter.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/Protocol/Message.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/Protocol/Message.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/Protocol/Message.pm	(revision 1564569)
+@@ -0,0 +1,64 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::Protocol::Message;
++
++use strict;
++use warnings;
++
++use Avro::Schema;
++use Avro::Protocol;
++use Error;
++
++use Object::Tiny qw{
++    doc
++    request
++    response
++    errors
++};
++
++sub new {
++    my $class = shift;
++    my $struct = shift;
++    my $types = shift;
++
++    my $resp_struct = $struct->{response}
++        or throw Avro::Protocol::Error::Parse("response is missing");
++
++    my $req_struct = $struct->{request}
++        or throw Avro::Protocol::Error::Parse("request is missing");
++
++    my $request = [
++        map { Avro::Schema::Field->new($_, $types) } @$req_struct
++    ];
++
++    my $err_struct = $struct->{errors};
++
++    my $response = Avro::Schema->parse_struct($resp_struct, $types);
++    my $errors   = Avro::Schema->parse_struct($err_struct, $types)
++        if $err_struct;
++
++    return $class->SUPER::new(
++        doc      => $struct->{doc},
++        request  => $request,
++        response => $response,
++        errors   => $errors,
++    );
++
++}
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/Protocol/Message.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/DataFile.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/DataFile.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/DataFile.pm	(revision 1564569)
+@@ -0,0 +1,47 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::DataFile;
++use strict;
++use warnings;
++
++use constant AVRO_MAGIC => "Obj\x01";
++
++use Avro::Schema;
++
++our $HEADER_SCHEMA = Avro::Schema->parse(<<EOH);
++{"type": "record", "name": "org.apache.avro.file.Header",
++  "fields" : [
++    {"name": "magic", "type": {"type": "fixed", "name": "Magic", "size": 4}},
++    {"name": "meta", "type": {"type": "map", "values": "bytes"}},
++    {"name": "sync", "type": {"type": "fixed", "name": "Sync", "size": 16}}
++  ]
++}
++EOH
++
++our %ValidCodec = (
++    null    => 1,
++    deflate => 1,
++);
++
++sub is_codec_valid {
++    my $datafile = shift;
++    my $codec = shift || '';
++    return $ValidCodec{$codec};
++}
++
+++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/DataFile.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/BinaryDecoder.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/BinaryDecoder.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/BinaryDecoder.pm	(revision 1564569)
+@@ -0,0 +1,391 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::BinaryDecoder;
++use strict;
++use warnings;
++
++use Config;
++use Encode();
++use Error::Simple;
++use Avro::Schema;
++
++our $complement = ~0x7F;
++unless ($Config{use64bitint}) {
++    require Math::BigInt;
++    $complement = Math::BigInt->new("0b" . ("1" x 57) . ("0" x 7));
++}
++
++=head2 decode(%param)
++
++Resolve the given writer and reader_schema to decode the data provided by the
++reader.
++
++=over 4
++
++=item * writer_schema
++
++The schema that was used to encode the data provided by the C<reader>
++
++=item * reader_schema
++
++The schema we want to use to decode the data.
++
++=item * reader
++
++An object implementing a straightforward interface. C<read($buf, $nbytes)> and
++C<seek($nbytes, $whence)> are expected. Typically a IO::String object or a
++IO::File object. It is expected that this calls will block the decoder, if not
++enough data is available for read.
++
++=back
++
++=cut
++sub decode {
++    my $class = shift;
++    my %param = @_;
++
++    my ($writer_schema, $reader_schema, $reader)
++        = @param{qw/writer_schema reader_schema reader/};
++
++    my $type = Avro::Schema->match(
++        writer => $writer_schema,
++        reader => $reader_schema,
++    ) or throw Avro::Schema::Error::Mismatch;
++
++    my $meth = "decode_$type";
++    return $class->$meth($writer_schema, $reader_schema, $reader);
++}
++
++sub skip {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    my $type = ref $schema ? $schema->type : $schema;
++    my $meth = "skip_$type";
++    return $class->$meth($schema, $reader);
++}
++
++sub decode_null { undef }
++
++sub skip_boolean { &decode_boolean }
++sub decode_boolean {
++    my $class = shift;
++    my $reader = pop;
++    $reader->read(my $bool, 1);
++    return unpack 'C', $bool;
++}
++
++sub skip_int { &decode_int }
++sub decode_int {
++    my $class = shift;
++    my $reader = pop;
++    return zigzag(unsigned_varint($reader));
++}
++
++sub skip_long { &decode_long };
++sub decode_long {
++    my $class = shift;
++    return decode_int($class, @_);
++}
++
++sub skip_float { &decode_float }
++sub decode_float {
++    my $class = shift;
++    my $reader = pop;
++    $reader->read(my $buf, 4);
++    return unpack "f<", $buf;
++}
++
++sub skip_double { &decode_double }
++sub decode_double {
++    my $class = shift;
++    my $reader = pop;
++    $reader->read(my $buf, 8);
++    return unpack "d<", $buf,
++}
++
++sub skip_bytes {
++    my $class = shift;
++    my $reader = pop;
++    my $size = decode_long($class, undef, undef, $reader);
++    $reader->seek($size, 0);
++    return;
++}
++
++sub decode_bytes {
++    my $class = shift;
++    my $reader = pop;
++    my $size = decode_long($class, undef, undef, $reader);
++    $reader->read(my $buf, $size);
++    return $buf;
++}
++
++sub skip_string { &skip_bytes }
++sub decode_string {
++    my $class = shift;
++    my $reader = pop;
++    my $bytes = decode_bytes($class, undef, undef, $reader);
++    return Encode::decode_utf8($bytes);
++}
++
++sub skip_record {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    for my $field (@{ $schema->fields }){
++        skip($class, $field->{type}, $reader);
++    }
++}
++
++## 1.3.2 A record is encoded by encoding the values of its fields in the order
++## that they are declared. In other words, a record is encoded as just the
++## concatenation of the encodings of its fields. Field values are encoded per
++## their schema.
++sub decode_record {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    my $record;
++
++    my %extra_fields = %{ $reader_schema->fields_as_hash };
++    for my $field (@{ $writer_schema->fields }) {
++        my $name = $field->{name};
++        my $w_field_schema = $field->{type};
++        my $r_field_schema = delete $extra_fields{$name};
++
++        ## 1.3.2 if the writer's record contains a field with a name not
++        ## present in the reader's record, the writer's value for that field
++        ## is ignored.
++        if (! $r_field_schema) {
++            $class->skip($w_field_schema, $reader);
++            next;
++        }
++        my $data = $class->decode(
++            writer_schema => $w_field_schema,
++            reader_schema => $r_field_schema->{type},
++            reader        => $reader,
++        );
++        $record->{ $name } = $data;
++    }
++
++    for my $name (keys %extra_fields) {
++        ## 1.3.2. if the reader's record schema has a field with no default
++        ## value, and writer's schema does not have a field with the same
++        ## name, an error is signalled.
++        unless (exists $extra_fields{$name}->{default}) {
++            throw Avro::Schema::Error::Mismatch(
++                "cannot resolve without default"
++            );
++        }
++        ## 1.3.2 ... else the default value is used
++        $record->{ $name } = $extra_fields{$name}->{default};
++    }
++    return $record;
++}
++
++sub skip_enum { &skip_int }
++
++## 1.3.2 An enum is encoded by a int, representing the zero-based position of
++## the symbol in the schema.
++sub decode_enum {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    my $index = decode_int($class, @_);
++
++    my $w_data = $writer_schema->symbols->[$index];
++    ## 1.3.2 if the writer's symbol is not present in the reader's enum,
++    ## then an error is signalled.
++    throw Avro::Schema::Error::Mismatch("enum unknown")
++        unless $reader_schema->is_data_valid($w_data);
++    return $w_data;
++}
++
++sub skip_block {
++    my $class = shift;
++    my ($reader, $block_content) = @_;
++    my $block_count = decode_long($class, undef, undef, $reader);
++    while ($block_count) {
++        if ($block_count < 0) {
++            $reader->seek($block_count, 0);
++            next;
++        }
++        else {
++            for (1..$block_count) {
++                $block_content->();
++            }
++        }
++        $block_count = decode_long($class, undef, undef, $reader);
++    }
++}
++
++sub skip_array {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    skip_block($reader, sub { $class->skip($schema->items, $reader) });
++}
++
++## 1.3.2 Arrays are encoded as a series of blocks. Each block consists of a
++## long count value, followed by that many array items. A block with count zero
++## indicates the end of the array. Each item is encoded per the array's item
++## schema.
++## If a block's count is negative, its absolute value is used, and the count is
++## followed immediately by a long block size
++sub decode_array {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    my $block_count = decode_long($class, @_);
++    my @array;
++    my $writer_items = $writer_schema->items;
++    my $reader_items = $reader_schema->items;
++    while ($block_count) {
++        my $block_size;
++        if ($block_count < 0) {
++            $block_count = -$block_count;
++            $block_size = decode_long($class, @_);
++            ## XXX we can skip with $reader_schema?
++        }
++        for (1..$block_count) {
++            push @array, $class->decode(
++                writer_schema => $writer_items,
++                reader_schema => $reader_items,
++                reader        => $reader,
++            );
++        }
++        $block_count = decode_long($class, @_);
++    }
++    return \@array;
++}
++
++sub skip_map {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    skip_block($reader, sub {
++        skip_string($class, $reader);
++        $class->skip($schema->values, $reader);
++    });
++}
++
++## 1.3.2 Maps are encoded as a series of blocks. Each block consists of a long
++## count value, followed by that many key/value pairs. A block with count zero
++## indicates the end of the map. Each item is encoded per the map's value
++## schema.
++##
++## If a block's count is negative, its absolute value is used, and the count is
++## followed immediately by a long block size indicating the number of bytes in
++## the block. This block size permits fast skipping through data, e.g., when
++## projecting a record to a subset of its fields.
++sub decode_map {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    my %hash;
++
++    my $block_count = decode_long($class, @_);
++    my $writer_values = $writer_schema->values;
++    my $reader_values = $reader_schema->values;
++    while ($block_count) {
++        my $block_size;
++        if ($block_count < 0) {
++            $block_count = -$block_count;
++            $block_size = decode_long($class, @_);
++            ## XXX we can skip with $reader_schema?
++        }
++        for (1..$block_count) {
++            my $key = decode_string($class, @_);
++            unless (defined $key && length $key) {
++                throw Avro::Schema::Error::Parse("key of map is invalid");
++            }
++            $hash{$key} = $class->decode(
++                writer_schema => $writer_values,
++                reader_schema => $reader_values,
++                reader        => $reader,
++            );
++        }
++        $block_count = decode_long($class, @_);
++    }
++    return \%hash;
++}
++
++sub skip_union {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    my $idx = decode_long($class, undef, undef, $reader);
++    my $union_schema = $schema->schemas->[$idx]
++        or throw Avro::Schema::Error::Parse("union union member");
++    $class->skip($union_schema, $reader);
++}
++
++## 1.3.2 A union is encoded by first writing a long value indicating the
++## zero-based position within the union of the schema of its value. The value
++## is then encoded per the indicated schema within the union.
++sub decode_union {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    my $idx = decode_long($class, @_);
++    my $union_schema = $writer_schema->schemas->[$idx];
++    ## XXX TODO: schema resolution
++    # The first schema in the reader's union that matches the selected writer's
++    # union schema is recursively resolved against it. if none match, an error
++    # is signalled.
++    return $class->decode(
++        reader_schema => $union_schema,
++        writer_schema => $union_schema,
++        reader => $reader,
++    );
++}
++
++sub skip_fixed {
++    my $class = shift;
++    my ($schema, $reader) = @_;
++    $reader->seek($schema->size, 0);
++}
++
++## 1.3.2 Fixed instances are encoded using the number of bytes declared in the
++## schema.
++sub decode_fixed {
++    my $class = shift;
++    my ($writer_schema, $reader_schema, $reader) = @_;
++    $reader->read(my $buf, $writer_schema->size);
++    return $buf;
++}
++
++sub zigzag {
++    my $int = shift;
++    if (1 & $int) {
++        ## odd values are encoded negative ints
++        return -( 1 + ($int >> 1) );
++    }
++    ## even values are positive natural left shifted one bit
++    else {
++        return $int >> 1;
++    }
++}
++
++sub unsigned_varint {
++    my $reader = shift;
++    my $int = 0;
++    my $more;
++    my $shift = 0;
++    do {
++        $reader->read(my $buf, 1);
++        my $byte = ord $buf;
++        my $value = $byte & 0x7F;
++        $int |= $value << $shift;
++        $shift += 7;
++        $more = $byte & 0x80;
++    } until (! $more);
++    return $int;
++}
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/BinaryDecoder.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/DataFileReader.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/DataFileReader.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/DataFileReader.pm	(revision 1564569)
+@@ -0,0 +1,294 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::DataFileReader;
++use strict;
++use warnings;
++
++use Object::Tiny qw{
++    fh
++    reader_schema
++    sync_marker
++    block_max_size
++};
++
++use constant MARKER_SIZE => 16;
++
++# TODO: refuse to read a block more than block_max_size, instead
++# do partial reads
++
++use Avro::DataFile;
++use Avro::BinaryDecoder;
++use Avro::Schema;
++use Carp;
++use IO::String;
++use IO::Uncompress::RawInflate ;
++use Fcntl();
++
++sub new {
++    my $class = shift;
++    my $datafile = $class->SUPER::new(@_);
++
++    my $schema = $datafile->{reader_schema};
++    croak "schema is invalid"
++        if $schema && ! eval { $schema->isa("Avro::Schema") };
++
++    return $datafile;
++}
++
++sub codec {
++    my $datafile = shift;
++    return $datafile->metadata->{'avro.codec'};
++}
++
++sub writer_schema {
++    my $datafile = shift;
++    unless (exists $datafile->{_writer_schema}) {
++        my $json_schema = $datafile->metadata->{'avro.schema'};
++        $datafile->{_writer_schema} = Avro::Schema->parse($json_schema);
++    }
++    return $datafile->{_writer_schema};
++}
++
++sub metadata {
++    my $datafile = shift;
++    unless (exists $datafile->{_metadata}) {
++        my $header = $datafile->header;
++        $datafile->{_metadata} = $header->{meta} || {};
++    }
++    return $datafile->{_metadata};
++}
++
++sub header {
++    my $datafile = shift;
++    unless (exists $datafile->{_header}) {
++        $datafile->{_header} = $datafile->read_file_header;
++    }
++
++    return $datafile->{_header};
++}
++
++sub read_file_header {
++    my $datafile = shift;
++
++    my $data = Avro::BinaryDecoder->decode(
++        reader_schema => $Avro::DataFile::HEADER_SCHEMA,
++        writer_schema => $Avro::DataFile::HEADER_SCHEMA,
++        reader        => $datafile->{fh},
++    );
++    croak "Magic '$data->{magic}' doesn't match"
++        unless $data->{magic} eq Avro::DataFile->AVRO_MAGIC;
++
++    $datafile->{sync_marker} = $data->{sync}
++        or croak "sync marker appears invalid";
++
++    my $codec = $data->{meta}{'avro.codec'} || "";
++
++    throw Avro::DataFile::Error::UnsupportedCodec($codec)
++        unless Avro::DataFile->is_codec_valid($codec);
++
++    return $data;
++}
++
++sub all {
++    my $datafile = shift;
++
++    my @objs;
++    my @block_objs;
++    do {
++        if ($datafile->eof) {
++            @block_objs = ();
++        }
++        else {
++            $datafile->read_block_header if $datafile->eob;
++            @block_objs = $datafile->read_to_block_end;
++            push @objs, @block_objs;
++        }
++
++    } until !@block_objs;
++
++    return @objs
++}
++
++sub next {
++    my $datafile = shift;
++    my $count    = shift;
++
++    my @objs;
++
++    $datafile->read_block_header if $datafile->eob;
++    return ()                    if $datafile->eof;
++
++    my $block_count = $datafile->{object_count};
++
++    if ($block_count <= $count) {
++        push @objs, $datafile->read_to_block_end;
++        croak "Didn't read as many objects than expected"
++            unless scalar @objs == $block_count;
++
++        push @objs, $datafile->next($count - $block_count);
++    }
++    else {
++        push @objs, $datafile->read_within_block($count);
++    }
++    return @objs;
++}
++
++sub read_within_block {
++    my $datafile = shift;
++    my $count    = shift;
++
++    my $reader        = $datafile->reader;
++    my $writer_schema = $datafile->writer_schema;
++    my $reader_schema = $datafile->reader_schema || $writer_schema;
++    my @objs;
++    while ($count-- > 0 && $datafile->{object_count} > 0) {
++        push @objs, Avro::BinaryDecoder->decode(
++            writer_schema => $writer_schema,
++            reader_schema => $reader_schema,
++            reader        => $reader,
++        );
++        $datafile->{object_count}--;
++    }
++    return @objs;
++}
++
++sub skip {
++    my $datafile = shift;
++    my $count    = shift;
++
++    my $block_count = $datafile->{object_count};
++    if ($block_count <= $count) {
++        $datafile->skip_to_block_end
++            or croak "Cannot skip to end of block!";
++        $datafile->skip($count - $block_count);
++    }
++    else {
++        my $writer_schema = $datafile->writer_schema;
++        ## could probably be optimized
++        while ($count--) {
++            Avro::BinaryDecoder->skip($writer_schema, $datafile->reader);
++            $datafile->{object_count}--;
++        }
++    }
++}
++
++sub read_block_header {
++    my $datafile = shift;
++    my $fh = $datafile->{fh};
++
++    $datafile->header unless $datafile->{_header};
++
++    $datafile->{object_count} = Avro::BinaryDecoder->decode_long(
++        undef, undef, $fh,
++    );
++    $datafile->{block_size} = Avro::BinaryDecoder->decode_long(
++        undef, undef, $fh,
++    );
++    $datafile->{block_start} = tell $fh;
++
++    return unless $datafile->codec eq 'deflate';
++    ## we need to read the entire block into memory, to inflate it
++    my $nread = read $fh, my $block, $datafile->{block_size} + MARKER_SIZE
++        or croak "Error reading from file: $!";
++
++    ## remove the marker
++    my $marker = substr $block, -(MARKER_SIZE), MARKER_SIZE, '';
++    $datafile->{block_marker} = $marker;
++
++    ## this is our new reader
++    $datafile->{reader} = IO::Uncompress::RawInflate->new(\$block);
++
++    return;
++}
++
++sub verify_marker {
++    my $datafile = shift;
++
++    my $marker = $datafile->{block_marker};
++    unless (defined $marker) {
++        ## we are in the fh case
++        read $datafile->{fh}, $marker, MARKER_SIZE;
++    }
++
++    unless (($marker || "") eq $datafile->sync_marker) {
++        croak "Oops synchronization issue (marker mismatch)";
++    }
++    return;
++}
++
++sub skip_to_block_end {
++    my $datafile = shift;
++
++    if (my $reader = $datafile->{reader}) {
++        seek $reader, 0, Fcntl->SEEK_END;
++        return;
++    }
++
++    my $remaining_size = $datafile->{block_size}
++                       + $datafile->{block_start}
++                       - tell $datafile->{fh};
++
++    seek $datafile->{fh}, $remaining_size, 0;
++    $datafile->verify_marker; ## will do a read
++    return 1;
++}
++
++sub read_to_block_end {
++    my $datafile = shift;
++
++    my $reader = $datafile->reader;
++    my @objs = $datafile->read_within_block( $datafile->{object_count} );
++    $datafile->verify_marker;
++    return @objs;
++}
++
++sub reader {
++    my $datafile = shift;
++    return $datafile->{reader} || $datafile->{fh};
++}
++
++## end of block
++sub eob {
++    my $datafile = shift;
++
++    return 1 if $datafile->eof;
++
++    if ($datafile->{reader}) {
++        return 1 if $datafile->{reader}->eof;
++    }
++    else {
++        my $pos = tell $datafile->{fh};
++        return 1 unless $datafile->{block_start};
++        return 1 if $pos >= $datafile->{block_start} + $datafile->{block_size};
++    }
++    return 0;
++}
++
++sub eof {
++    my $datafile = shift;
++    if ($datafile->{reader}) {
++        return 0 unless $datafile->{reader}->eof;
++    }
++    return 1 if $datafile->{fh}->eof;
++    return 0;
++}
++
++package Avro::DataFile::Error::UnsupportedCodec;
++use parent 'Error::Simple';
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/DataFileReader.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/Schema.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/Schema.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/Schema.pm	(revision 1564569)
+@@ -0,0 +1,838 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::Schema;
++use strict;
++use warnings;
++
++use Carp;
++use JSON::XS();
++use Try::Tiny;
++
++my $json = JSON::XS->new->allow_nonref;
++
++sub parse {
++    my $schema      = shift;
++    my $json_string = shift;
++    my $names       = shift || {};
++    my $namespace   = shift || "";
++
++    my $struct = try {
++        $json->decode($json_string);
++    }
++    catch {
++        throw Avro::Schema::Error::Parse(
++            "Cannot parse json string: $_"
++        );
++    };
++    return $schema->parse_struct($struct, $names, $namespace);
++}
++
++sub to_string {
++    my $class = shift;
++    my $struct = shift;
++    return $json->encode($struct);
++}
++
++sub parse_struct {
++    my $schema = shift;
++    my $struct = shift;
++    my $names = shift || {};
++    my $namespace = shift || "";
++
++    ## 1.3.2 A JSON object
++    if (ref $struct eq 'HASH') {
++        my $type = $struct->{type}
++            or throw Avro::Schema::Error::Parse("type is missing");
++        if ( Avro::Schema::Primitive->is_type_valid($type) ) {
++            return Avro::Schema::Primitive->new(type => $type);
++        }
++        ## XXX technically we shouldn't allow error type other than in
++        ## a Protocol definition
++        if ($type eq 'record' or $type eq 'error') {
++            return Avro::Schema::Record->new(
++                struct => $struct,
++                names => $names,
++                namespace => $namespace,
++            );
++        }
++        elsif ($type eq 'enum') {
++            return Avro::Schema::Enum->new(
++                struct => $struct,
++                names => $names,
++                namespace => $namespace,
++            );
++        }
++        elsif ($type eq 'array') {
++            return Avro::Schema::Array->new(
++                struct => $struct,
++                names => $names,
++                namespace => $namespace,
++            );
++        }
++        elsif ($type eq 'map') {
++            return Avro::Schema::Map->new(
++                struct => $struct,
++                names => $names,
++                namespace => $namespace,
++            );
++        }
++        elsif ($type eq 'fixed') {
++            return Avro::Schema::Fixed->new(
++                struct => $struct,
++                names => $names,
++                namespace => $namespace,
++            );
++        }
++        else {
++            throw Avro::Schema::Error::Parse("unknown type: $type");
++        }
++    }
++    ## 1.3.2 A JSON array, representing a union of embedded types.
++    elsif (ref $struct eq 'ARRAY') {
++        return Avro::Schema::Union->new(
++            struct => $struct,
++            names => $names,
++            namespace => $namespace,
++        );
++    }
++    ## 1.3.2 A JSON string, naming a defined type.
++    else {
++        my $type = $struct;
++        ## It's one of our custom defined type
++        
++        ## Short name provided, prepend the namespace
++        if ( $type !~ /\./ ) {
++            my $fulltype = $namespace . '.' . $type;
++            if (exists $names->{$fulltype}) {
++                return $names->{$fulltype};
++            }
++        }
++        
++        ## Fully-qualified name
++        if (exists $names->{$type}) {
++            return $names->{$type};
++        }
++        
++        ## It's a primitive type
++        return Avro::Schema::Primitive->new(type => $type);
++    }
++}
++
++sub match {
++    my $class = shift;
++    my %param = @_;
++
++    my $reader = $param{reader}
++        or croak "missing reader schema";
++    my $writer = $param{writer}
++        or croak "missing writer schema";
++
++    my $wtype = ref $writer ? $writer->type : $writer;
++    my $rtype = ref $reader ? $reader->type : $reader;
++    ## 1.3.2 either schema is a union
++    return $wtype if $wtype eq 'union' or $rtype eq 'union';
++
++    ## 1.3.2 both schemas have same primitive type
++    return $wtype if $wtype eq $rtype
++             && Avro::Schema::Primitive->is_type_valid($wtype);
++
++    ## 1.3.2
++    ## int is promotable to long, float, or double
++    if ($wtype eq 'int' && (
++        $rtype eq 'float' or $rtype eq 'long' or $rtype eq 'double'
++    )) {
++        return $rtype;
++    }
++    ## long is promotable to float or double
++    if ($wtype eq 'long' && (
++        $rtype eq 'float' or $rtype eq 'double'
++    )) {
++        return $rtype;
++    }
++    ## float is promotable to double
++    if ($wtype eq 'float' && $rtype eq 'double') {
++        return $rtype;
++    }
++    return 0 unless $rtype eq $wtype;
++
++    ## 1.3.2 {subtype and/or names} match
++    if ($rtype eq 'array') {
++        return $wtype if $class->match(
++            reader => $reader->items,
++            writer => $writer->items,
++        );
++    }
++    elsif ($rtype eq 'record') {
++        return $wtype if $reader->fullname eq $writer->fullname;
++    }
++    elsif ($rtype eq 'map') {
++        return $wtype if $class->match(
++            reader => $reader->values,
++            writer => $writer->values,
++        );
++    }
++    elsif ($rtype eq 'fixed') {
++        return $wtype if $reader->size     eq $writer->size
++                      && $reader->fullname eq $writer->fullname;
++    }
++    elsif ($rtype eq 'enum') {
++        return $wtype if $reader->fullname eq $writer->fullname;
++    }
++    return 0;
++}
++
++
++package Avro::Schema::Base;
++our @ISA = qw/Avro::Schema/;
++use Carp;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++
++    my $type = $param{type};
++    if (!$type) {
++        my ($t) = $class =~ /::([^:]+)$/;
++        $type = lc ($t);
++    }
++    my $schema = bless {
++        type => $type,
++    }, $class;
++    return $schema;
++}
++
++sub type {
++    my $schema = shift;
++    return $schema->{type};
++}
++
++sub to_string {
++    my $schema = shift;
++    my $known_names = shift || {};
++    return Avro::Schema->to_string($schema->to_struct($known_names));
++}
++
++package Avro::Schema::Primitive;
++our @ISA = qw/Avro::Schema::Base/;
++use Carp;
++use Config;
++use Regexp::Common qw/number/;
++
++my %PrimitiveType = map { $_ => 1 } qw/
++    null
++    boolean
++    int
++    long
++    float
++    double
++    bytes
++    string
++/;
++
++my %Singleton = ( );
++
++## FIXME: useless lazy generation
++sub new {
++    my $class = shift;
++    my %param = @_;
++
++    my $type = $param{type}
++        or croak "Schema must have a type";
++
++    throw Avro::Schema::Error::Parse("Not a primitive type $type")
++        unless $class->is_type_valid($type);
++
++    if (! exists $Singleton{ $type } ) {
++        my $schema = $class->SUPER::new( type => $type );
++        $Singleton{ $type } = $schema;
++    }
++    return $Singleton{ $type };
++}
++
++sub is_type_valid {
++    return $PrimitiveType{ $_[1] || "" };
++}
++
++## Returns true or false wheter the given data is valid for
++## this schema
++sub is_data_valid {
++    my $schema = shift;
++    my $data = shift;
++    my $type = $schema->{type};
++    if ($type eq 'int') {
++        no warnings;
++        my $packed_int = pack "l", $data;
++        my $unpacked_int = unpack "l", $packed_int;
++        return $unpacked_int eq $data ? 1 : 0;
++    }
++    if ($type eq 'long') {
++        if ($Config{use64bitint}) {
++            my $packed_int = pack "q", $data;
++            my $unpacked_int = unpack "q", $packed_int;
++            return $unpacked_int eq $data ? 1 : 0;
++
++        }
++        else {
++            require Math::BigInt;
++            my $int = eval { Math::BigInt->new($data) };
++            if ($@) {
++                warn "probably a unblessed ref: $@";
++                return 0;
++            }
++            return 0 if $int->is_nan;
++            my $max = Math::BigInt->new( "0x7FFF_FFFF_FFFF_FFFF" );
++            return $int->bcmp($max) <= 0 ? 1 : 0;
++        }
++    }
++    if ($type eq 'float' or $type eq 'double') {
++        $data =~ /^$RE{num}{real}$/ ? return 1 : 0;
++    }
++    if ($type eq "bytes" or $type eq "string") {
++        return 1 unless !defined $data or ref $data;
++    }
++    if ($type eq 'null') {
++        return defined $data ? 0 : 1;
++    }
++    if ($type eq 'boolean') {
++        return 0 if ref $type; # sometimes risky
++        return 1 if $type =~ m{yes|no|y|n|t|f|true|false}i;
++        return 0;
++    }
++    return 0;
++}
++
++sub to_struct {
++    my $schema = shift;
++    return $schema->type;
++}
++
++package Avro::Schema::Named;
++our @ISA = qw/Avro::Schema::Base/;
++use Scalar::Util;
++
++my %NamedType = map { $_ => 1 } qw/
++    record
++    enum
++    fixed
++/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++
++    my $schema = $class->SUPER::new(%param);
++
++    my $names     = $param{names}  || {};
++    my $struct    = $param{struct} || {};
++    my $name      = $struct->{name};
++    unless (defined $name && length $name) {
++        throw Avro::Schema::Error::Parse( "Missing name for $class" );
++    }
++    my $namespace = $struct->{namespace};
++    unless (defined $namespace && length $namespace) {
++        $namespace = $param{namespace};
++    }
++
++    $schema->set_names($namespace, $name);
++    $schema->add_name($names);
++
++    return $schema;
++}
++
++sub is_type_valid {
++    return $NamedType{ $_[1] || "" };
++}
++
++sub set_names {
++    my $schema = shift;
++    my ($namespace, $name) = @_;
++
++    my @parts = split /\./, ($name || ""), -1;
++    if (@parts > 1) {
++        $name = pop @parts;
++        $namespace = join ".", @parts;
++        if (grep { ! length $_ } @parts) {
++            throw Avro::Schema::Error::Name(
++                "name '$name' is not a valid name"
++            );
++        }
++    }
++
++    ## 1.3.2 The name portion of a fullname, and record field names must:
++    ## * start with [A-Za-z_]
++    ## * subsequently contain only [A-Za-z0-9_]
++    my $type = $schema->{type};
++    unless (length $name && $name =~ m/^[A-Za-z_][A-Za-z0-9_]*$/) {
++        throw Avro::Schema::Error::Name(
++            "name '$name' is not valid for $type"
++        );
++    }
++    if (defined $namespace && length $namespace) {
++        for (split /\./, $namespace, -1) {
++            unless ($_ && /^[A-Za-z_][A-Za-z0-9_]*$/) {
++                throw Avro::Schema::Error::Name(
++                    "namespace '$namespace' is not valid for $type"
++                );
++            }
++        }
++    }
++    $schema->{name} = $name;
++    $schema->{namespace} = $namespace;
++}
++
++sub add_name {
++    my $schema = shift;
++    my ($names) = @_;
++
++    my $name = $schema->fullname;
++    if ( exists $names->{ $name } ) {
++        throw Avro::Schema::Error::Parse( "Name $name is already defined" );
++    }
++    $names->{$name} = $schema;
++    Scalar::Util::weaken( $names->{$name} );
++    return;
++}
++
++sub fullname {
++    my $schema = shift;
++    return join ".",
++        grep { defined $_ && length $_ }
++        map { $schema->{$_ } }
++        qw/namespace name/;
++}
++
++sub namespace {
++    my $schema = shift;
++    return $schema->{namespace};
++}
++
++package Avro::Schema::Record;
++our @ISA = qw/Avro::Schema::Named/;
++use Scalar::Util;
++
++my %ValidOrder = map { $_ => 1 } qw/ascending descending ignore/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++
++    my $names  = $param{names} ||= {};
++    my $schema = $class->SUPER::new(%param);
++
++    my $fields = $param{struct}{fields}
++        or throw Avro::Schema::Error::Parse("Record must have Fields");
++
++    throw Avro::Schema::Error::Parse("Record.Fields must me an array")
++        unless ref $fields eq 'ARRAY';
++
++    my $namespace = $schema->namespace;
++
++    my @fields;
++    for my $field (@$fields) {
++        my $f = Avro::Schema::Field->new($field, $names, $namespace);
++        push @fields, $f;
++    }
++    $schema->{fields} = \@fields;
++    return $schema;
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++    ## consider that this record type is now known (will serialize differently)
++    my $fullname = $schema->fullname;
++    if ($known_names->{ $fullname }++) {
++        return $fullname;
++    }
++    return {
++        type => $schema->{type},
++        name => $fullname,
++        fields => [
++            map { $_->to_struct($known_names) } @{ $schema->{fields} }
++        ],
++    };
++}
++
++sub fields {
++    my $schema = shift;
++    return $schema->{fields};
++}
++
++sub fields_as_hash {
++    my $schema = shift;
++    unless (exists $schema->{_fields_as_hash}) {
++        $schema->{_fields_as_hash} = {
++            map { $_->{name} => $_ } @{ $schema->{fields} }
++        };
++    }
++    return $schema->{_fields_as_hash};
++}
++
++sub is_data_valid {
++    my $schema = shift;
++    my $data = shift;
++    for my $field (@{ $schema->{fields} }) {
++        my $key = $field->{name};
++        return 0 unless $field->is_data_valid($data->{$key});
++    }
++    return 1;
++}
++
++package Avro::Schema::Field;
++
++sub to_struct {
++    my $field = shift;
++    my $known_names = shift || {};
++    my $type = $field->{type}->to_struct($known_names);
++    return { name => $field->{name}, type => $type };
++}
++
++sub new {
++    my $class = shift;
++    my ($struct, $names, $namespace) = @_;
++
++    my $name = $struct->{name};
++    throw Avro::Schema::Error::Parse("Record.Field.name is required")
++        unless defined $name && length $name;
++
++    my $type = $struct->{type};
++    throw Avro::Schema::Error::Parse("Record.Field.name is required")
++        unless defined $type && length $type;
++
++    $type = Avro::Schema->parse_struct($type, $names, $namespace);
++    my $field = { name => $name, type => $type };
++    #TODO: find where to weaken precisely
++    #Scalar::Util::weaken($struct->{type});
++
++    if (exists $struct->{default}) {
++        my $is_valid = $type->is_data_valid($struct->{default});
++        my $t = $type->type;
++        throw Avro::Schema::Error::Parse(
++            "default value doesn't validate $t: '$struct->{default}'"
++        ) unless $is_valid;
++
++        ## small Perlish special case
++        if ($type eq 'boolean') {
++            $field->{default} = $struct->{default} ? 1 : 0;
++        }
++        else {
++            $field->{default} = $struct->{default};
++        }
++    }
++    if (my $order = $struct->{order}) {
++        throw Avro::Schema::Error::Parse(
++            "Order '$order' is not valid'"
++        ) unless $ValidOrder{$order};
++        $field->{order} = $order;
++    }
++    return bless $field, $class;
++}
++
++sub is_data_valid {
++    my $field = shift;
++    my $data = shift;
++    return 1 if $field->{type}->is_data_valid($data);
++    return 0;
++}
++
++package Avro::Schema::Enum;
++our @ISA = qw/Avro::Schema::Named/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++    my $schema = $class->SUPER::new(%param);
++    my $struct = $param{struct}
++        or throw Avro::Schema::Error::Parse("Enum instantiation");
++    my $symbols = $struct->{symbols} || [];
++
++    unless (@$symbols) {
++        throw Avro::Schema::Error::Parse("Enum needs at least one symbol");
++    }
++    my %symbols;
++    my $pos = 0;
++    for (@$symbols) {
++        if (ref $_) {
++            throw Avro::Schema::Error::Parse(
++                "Enum.symbol should be a string"
++            );
++        }
++        throw Avro::Schema::Error::Parse("Duplicate symbol in Enum")
++            if exists $symbols{$_};
++
++        $symbols{$_} = $pos++;
++    }
++    $schema->{hash_symbols} = \%symbols;
++    return $schema;
++}
++
++sub is_data_valid {
++    my $schema = shift;
++    my $data = shift;
++    return 1 if defined $data && exists $schema->{hash_symbols}{$data};
++    return 0;
++}
++
++sub symbols {
++    my $schema = shift;
++    unless (exists $schema->{symbols}) {
++        my $sym = $schema->{hash_symbols};
++        $schema->{symbols} = [ sort { $sym->{$a} <=> $sym->{$b} } keys %$sym ];
++    }
++    return $schema->{symbols};
++}
++
++sub symbols_as_hash {
++    my $schema = shift;
++    return $schema->{hash_symbols} || {};
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++
++    my $fullname = $schema->fullname;
++    if ($known_names->{ $fullname }++) {
++        return $fullname;
++    }
++    return {
++        type => 'enum',
++        name => $schema->fullname,
++        symbols => [ @{ $schema->symbols } ],
++    };
++}
++
++package Avro::Schema::Array;
++our @ISA = qw/Avro::Schema::Base/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++    my $schema = $class->SUPER::new(%param);
++
++    my $struct = $param{struct}
++        or throw Avro::Schema::Error::Parse("Enum instantiation");
++
++    my $items = $struct->{items}
++        or throw Avro::Schema::Error::Parse("Array must declare 'items'");
++
++    $items = Avro::Schema->parse_struct($items, $param{names});
++    $schema->{items} = $items;
++    return $schema;
++}
++
++sub is_data_valid {
++    my $schema = shift;
++    my $default = shift;
++    return 1 if $default && ref $default eq 'ARRAY';
++    return 0;
++}
++
++sub items {
++    my $schema = shift;
++    return $schema->{items};
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++
++    return {
++        type => 'array',
++        items => $schema->{items}->to_struct($known_names),
++    };
++}
++
++package Avro::Schema::Map;
++our @ISA = qw/Avro::Schema::Base/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++    my $schema = $class->SUPER::new(%param);
++
++    my $struct = $param{struct}
++        or throw Avro::Schema::Error::Parse("Map instantiation");
++
++    my $values = $struct->{values};
++    unless (defined $values && length $values) {
++        throw Avro::Schema::Error::Parse("Map must declare 'values'");
++    }
++    $values = Avro::Schema->parse_struct($values, $param{names});
++    $schema->{values} = $values;
++
++    return $schema;
++}
++
++sub is_data_valid {
++    my $schema = shift;
++    my $default = shift;
++    return 1 if $default && ref $default eq 'HASH';
++    return 0;
++}
++
++sub values {
++    my $schema = shift;
++    return $schema->{values};
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++
++    return {
++        type => 'map',
++        values => $schema->{values}->to_struct($known_names),
++    };
++}
++
++package Avro::Schema::Union;
++our @ISA = qw/Avro::Schema::Base/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++    my $schema = $class->SUPER::new(%param);
++    my $union = $param{struct}
++        or throw Avro::Schema::Error::Parse("Union.new needs a struct");
++
++    my $names = $param{names} ||= {};
++
++    my @schemas;
++    my %seen_types;
++    for my $struct (@$union) {
++        my $sch = Avro::Schema->parse_struct($struct, $names);
++        my $type = $sch->type;
++
++        ## 1.3.2 Unions may not contain more than one schema with the same
++        ## type, except for the named types record, fixed and enum. For
++        ## example, unions containing two array types or two map types are not
++        ## permitted, but two types with different names are permitted.
++        if (Avro::Schema::Named->is_type_valid($type)) {
++            $type = $sch->fullname; # resolve Named types to their name
++        }
++        ## XXX: I could define &type_name doing the correct resolution for all classes
++        if ($seen_types{ $type }++) {
++            throw Avro::Schema::Error::Parse(
++                "$type is present more than once in the union"
++            )
++        }
++        ## 1.3.2 Unions may not immediately contain other unions.
++        if ($type eq 'union') {
++            throw Avro::Schema::Error::Parse(
++                "Cannot embed unions in union"
++            );
++        }
++        push @schemas, $sch;
++    }
++    $schema->{schemas} = \@schemas;
++
++    return $schema;
++}
++
++sub schemas {
++    my $schema = shift;
++    return $schema->{schemas};
++}
++
++sub is_data_valid {    
++    my $schema = shift;
++    my $data = shift;
++    for my $type ( @{ $schema->{schemas} } ) {
++        if ( $type->is_data_valid($data) ) {
++            return 1;
++        }
++    }
++    return 0;
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++    return [ map { $_->to_struct($known_names) } @{$schema->{schemas}} ];
++}
++
++package Avro::Schema::Fixed;
++our @ISA = qw/Avro::Schema::Named/;
++
++sub new {
++    my $class = shift;
++    my %param = @_;
++    my $schema = $class->SUPER::new(%param);
++
++    my $struct = $param{struct}
++        or throw Avro::Schema::Error::Parse("Fixed instantiation");
++
++    my $size = $struct->{size};
++    unless (defined $size && length $size) {
++        throw Avro::Schema::Error::Parse("Fixed must declare 'size'");
++    }
++    if (ref $size) {
++        throw Avro::Schema::Error::Parse(
++            "Fixed.size should be a scalar"
++        );
++    }
++    unless ($size =~ m{^\d+$} && $size > 0) {
++        throw Avro::Schema::Error::Parse(
++            "Fixed.size should be a positive integer"
++        );
++    }
++    $schema->{size} = $size;
++
++    return $schema;
++}
++
++sub is_data_valid {
++    my $schema = shift;
++    my $default = shift;
++    my $size = $schema->{size};
++    return 1 if $default && bytes::length $default == $size;
++    return 0;
++}
++
++sub size {
++    my $schema = shift;
++    return $schema->{size};
++}
++
++sub to_struct {
++    my $schema = shift;
++    my $known_names = shift || {};
++
++    my $fullname = $schema->fullname;
++    if ($known_names->{ $fullname }++) {
++        return $fullname;
++    }
++
++    return {
++        type => 'fixed',
++        name => $fullname,
++        size => $schema->{size},
++    };
++}
++
++package Avro::Schema::Error::Parse;
++use parent 'Error::Simple';
++
++package Avro::Schema::Error::Name;
++use parent 'Error::Simple';
++
++package Avro::Schema::Error::Mismatch;
++use parent 'Error::Simple';
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/Schema.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/lib/Avro/Protocol.pm
+===================================================================
+--- trunk/lang/perl/lib/Avro/Protocol.pm	(revision 0)
++++ trunk/lang/perl/lib/Avro/Protocol.pm	(revision 1564569)
+@@ -0,0 +1,114 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++package Avro::Protocol;
++use strict;
++use warnings;
++
++use Carp;
++use JSON::XS();
++use Try::Tiny;
++use Avro::Protocol::Message;
++use Avro::Schema;
++use Error;
++use Object::Tiny qw{
++    name
++    namespace
++    doc
++    types
++    messages
++};
++
++my $json = JSON::XS->new->allow_nonref;
++
++sub parse {
++    my $class     = shift;
++    my $enc_proto = shift
++        or throw Avro::Protocol::Error::Parse("protocol cannot be empty");
++
++    my $struct = try {
++        $json->decode($enc_proto);
++    }
++    catch {
++        throw Avro::Protocol::Error::Parse(
++            "Cannot parse json string: $_"
++        );
++    };
++    return $class->from_struct($struct);
++}
++
++sub from_struct {
++    my $class = shift;
++    my $struct = shift || {};
++    my $name = $struct->{protocol};
++    unless (defined $name or length $name) {
++        throw Avro::Protocol::Error::Parse("protocol name is required");
++    }
++
++    my $types = $class->parse_types($struct->{types});
++
++    my $messages = $class->parse_messages($struct->{messages}, $types)
++        if $struct->{messages};
++
++    my $protocol = $class->SUPER::new(
++        name      => $name,
++        namespace => $struct->{namespace},
++        doc       => $struct->{doc},
++        types     => $types,
++        messages  => $messages,
++    );
++    return $protocol;
++}
++
++sub parse_types {
++    my $class = shift;
++    my $types = shift || [];
++
++    my %types;
++    my $names = {};
++    for (@$types) {
++        try {
++            my $schema = Avro::Schema->parse_struct($_, $names);
++            $types{ $schema->fullname } = $schema;
++        }
++        catch {
++            throw Avro::Protocol::Error::Parse("errors in parsing types: $_");
++        };
++    }
++    return \%types;
++}
++
++sub parse_messages {
++    my $class = shift;
++    my $messages = shift || {};
++    my $types = shift;
++    my $m = {};
++    for my $name (keys %$messages) {
++        $m->{$name} = Avro::Protocol::Message->new($messages->{$name}, $types);
++    }
++    return $m;
++}
++
++sub fullname {
++    my $protocol = shift;
++    return join ".", grep { $_ } map { $protocol->$_ } qw{ namespace name };
++}
++
++package Avro::Protocol::Error::Parse;
++use parent 'Error::Simple';
++
++1;
+
+Property changes on: trunk/lang/perl/lib/Avro/Protocol.pm
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/Makefile.PL
+===================================================================
+--- trunk/lang/perl/Makefile.PL	(revision 0)
++++ trunk/lang/perl/Makefile.PL	(revision 1564569)
+@@ -0,0 +1,43 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use Config;
++use inc::Module::Install;
++
++my $version = `cat ../../share/VERSION.txt`;
++
++license 'apache';
++version $version;
++readme_from 'lib/Avro.pm';
++all_from 'lib/Avro.pm';
++build_requires 'Test::More', 0.88;
++test_requires 'Math::BigInt';
++test_requires 'Test::Exception';
++requires 'JSON::XS';
++requires 'Try::Tiny';
++requires 'parent';
++requires 'Regexp::Common';
++requires 'Encode';
++requires 'IO::String';
++requires 'Object::Tiny';
++requires 'Compress::Zlib';
++unless ($Config{use64bitint}) {
++    requires 'Math::BigInt';
++}
++auto_set_repository();
++
++WriteMakefile(PM_FILTER => "sed -e 's/\+\+MODULE_VERSION\+\+/$version/'");
+
+Property changes on: trunk/lang/perl/Makefile.PL
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/Changes
+===================================================================
+--- trunk/lang/perl/Changes	(revision 0)
++++ trunk/lang/perl/Changes	(revision 1564569)
+@@ -0,0 +1,7 @@
++Revision history for Perl extension Avro
++
++1.00  Fri Jan 17 15:00:00 2014
++        - Relicense under apache license 2.0
++
++0.01  Thu May 27 20:56:19 2010
++        - original version
+Index: trunk/lang/perl/bin/avro-to-json
+===================================================================
+--- trunk/lang/perl/bin/avro-to-json	(revision 0)
++++ trunk/lang/perl/bin/avro-to-json	(revision 1564569)
+@@ -0,0 +1,37 @@
++#!/usr/bin/env perl
++
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use strict;
++use warnings;
++
++use Avro::DataFileReader;
++use Carp;
++use IO::File;
++use JSON::XS;
++
++my $j = JSON::XS->new->allow_nonref;
++
++my $fh = IO::File->new(shift || croak "specify a file");
++my $reader = Avro::DataFileReader->new(
++    fh => $fh,
++);
++for ($reader->all) {
++    print $j->encode($_);
++    print "\n";
++}
+Index: trunk/lang/perl/MANIFEST.SKIP
+===================================================================
+--- trunk/lang/perl/MANIFEST.SKIP	(revision 0)
++++ trunk/lang/perl/MANIFEST.SKIP	(revision 1564569)
+@@ -0,0 +1,16 @@
++\bRCS\b
++\bCVS\b
++\.svn/
++\.git/
++^MANIFEST\.
++^Makefile$
++~$
++\.old$
++^blib/
++^pm_to_blib
++^MakeMaker-\d
++\.gz$
++\.cvsignore
++\.shipit
++^MYMETA.yml$
++^MYMETA.json$
+Index: trunk/lang/perl/xt/pod.t
+===================================================================
+--- trunk/lang/perl/xt/pod.t	(revision 0)
++++ trunk/lang/perl/xt/pod.t	(revision 1564569)
+@@ -0,0 +1,21 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing,
++# software distributed under the License is distributed on an
++# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++# KIND, either express or implied.  See the License for the
++# specific language governing permissions and limitations
++# under the License.
++
++use Test::More;
++eval "use Test::Pod 1.00";
++plan skip_all => "Test::Pod 1.00 required for testing POD" if $@;
++all_pod_files_ok();
+Index: trunk/lang/perl/README
+===================================================================
+--- trunk/lang/perl/README	(revision 0)
++++ trunk/lang/perl/README	(revision 1564569)
+@@ -0,0 +1,24 @@
++NAME
++    Avro - official Perl API for the Avro serialization and RPC framework
++
++SYNOPSIS
++      use Avro;
++
++DESCRIPTION
++AUTHOR
++    Apache Avro <avro-dev@hadoop.apache.org>
++
++HISTORY
++    Before contribution to the Apache Avro project, this module was
++    developed by Yann Kerhervé <yannk@cpank.org> with contributions from
++    Andy Grundman <andy@hybridized.org>, David Bushong
++    <dbushong@mashlogic.com>, and Ilya Martynov <ilya@iponweb.net>.
++
++COPYRIGHT
++    Copyright 2014 Apache Software Foundation.
++
++LICENSE
++    The Apache License, Version 2.0
++    <http://www.apache.org/licenses/LICENSE-2.0>
++
++SEE ALSO
+
+Property changes on: trunk/lang/perl/README
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+Index: trunk/lang/perl/.shipit
+===================================================================
+--- trunk/lang/perl/.shipit	(revision 0)
++++ trunk/lang/perl/.shipit	(revision 1564569)
+@@ -0,0 +1,2 @@
++steps = FindVersion, ChangeVersion, CheckChangeLog, DistTest, Commit, Tag, MakeDist, UploadCPAN
++git.push_to = origin
+Index: trunk/lang/perl/NOTICE.txt
+===================================================================
+--- trunk/lang/perl/NOTICE.txt	(revision 0)
++++ trunk/lang/perl/NOTICE.txt	(revision 1564569)
+@@ -0,0 +1 @@
++Copyright (C) 2010 Yann Kerherve. All rights reserved.
+
+Property changes on: trunk/lang/perl/NOTICE.txt
+___________________________________________________________________
+Added: svn:eol-style
+   + native
+
+
+Property changes on: trunk/lang/perl
+___________________________________________________________________
+Added: svn:ignore
+   + META.yml
+MYMETA.json
+MYMETA.yml
+Makefile
+Makefile.old
+blib
+inc
+pm_to_blib
+
+
+Index: trunk/CHANGES.txt
+===================================================================
+--- trunk/CHANGES.txt	(revision 1564568)
++++ trunk/CHANGES.txt	(revision 1564569)
+@@ -6,6 +6,8 @@
+ 
+     AVRO-1439. Java: Add AvroMultipleInputs for mapred. (Harsh J via cutting)
+ 
++    AVRO-974. Add a Perl implementation of Avro. (Yann Kerhervé & John Karp)
++
+   OPTIMIZATIONS
+ 
+   IMPROVEMENTS
+Index: trunk/build.sh
+===================================================================
+--- trunk/build.sh	(revision 1564568)
++++ trunk/build.sh	(revision 1564569)
+@@ -49,6 +49,7 @@
+ 	(cd lang/js; ./build.sh test)
+ 	(cd lang/ruby; ./build.sh test)
+ 	(cd lang/php; ./build.sh test)
++	(cd lang/perl; perl ./Makefile.PL && make test)
+ 
+ 	# create interop test data
+         mkdir -p build/interop/data
+@@ -115,6 +116,10 @@
+ 
+ 	(cd lang/php; ./build.sh dist)
+ 
++        mkdir -p dist/perl
++	(cd lang/perl; make dist)
++        cp lang/perl/Avro-$VERSION.tar.gz dist/perl/
++
+ 	# build docs
+ 	(cd doc; ant)
+ 	(cd build; tar czf ../dist/avro-doc-$VERSION.tar.gz avro-doc-$VERSION)
+@@ -163,6 +168,8 @@
+ 	(cd lang/ruby; ./build.sh clean)
+ 
+ 	(cd lang/php; ./build.sh clean)
++
++	(cd lang/perl; make clean)
+ 	;;
+ 
+     *)

@@ -1,0 +1,8 @@
+#!/bin/bash
+
+if [[ ! $# -eq 0 ]]
+then
+	svn diff -c $1 http://svn.apache.org/repos/asf/avro/ > $1
+	#	svn diff -c $1  file:///home/effortmetrics/repodump/mirr > $1
+fi
+
