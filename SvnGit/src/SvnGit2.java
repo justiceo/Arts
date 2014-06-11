@@ -52,7 +52,7 @@ public class SvnGit2 {
 		String str = "";
 		
 		int i=0;
-		while (input.hasNext())
+		while (input.hasNext() && i<200)
 		{
 			line = input.nextLine();
 			if (line.contains("revision=")) {
@@ -125,7 +125,7 @@ public class SvnGit2 {
 		String holdFile = "", nextFile = "";
 				
 		//create svn.diff file
-		ProcessBuilder pb = new ProcessBuilder("/home/ejo36/research/SvnGit/svnGet", commit.getID());
+		ProcessBuilder pb = new ProcessBuilder("/home/justice/git/Arts/SvnGit/svnGet", commit.getID());
 		try {
 			Process p = pb.start();
 			p.waitFor();
