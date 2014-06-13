@@ -7,6 +7,7 @@ then
 fi
 
 orig_source_file=$1
+
 function svnjam() {
 	source_file=$1
 	no_of_parts=$2

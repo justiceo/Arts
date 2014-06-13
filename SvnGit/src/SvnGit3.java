@@ -32,7 +32,7 @@ public class SvnGit3 {
 	public SvnGit3() //throws IOException - use me to cut out the crap
 	{
 		//open svn log file *input
-		srcFile = "hadoop_cut.log";
+		srcFile = "avro.log";
 		try	{
 			input = new Scanner( new BufferedReader( new FileReader(srcFile)));	//open file for read
 			System.out.println("Successfully opened " + srcFile );
@@ -162,7 +162,7 @@ public class SvnGit3 {
 		
 	} // end read()
 	
-	public void processFiles(){
+	public void processFiles() /*throws IOException, InterruptedException */{
 		System.out.println("Processing files in commit " + commit.ID);
 		String diffLine="";
 		pos = 0; neg=0; sum=0;
@@ -170,8 +170,7 @@ public class SvnGit3 {
 		String holdFile = "", nextFile = "";
 				
 		//create svn.diff file
-		
-		pb = new ProcessBuilder(filePath, commit.ID, "http://svn.apache.org/repos/asf/hadoop/");
+		pb = new ProcessBuilder(filePath, commit.ID);
 		try {
 			Process p = pb.start();
 			p.waitFor();
@@ -394,7 +393,7 @@ public class SvnGit3 {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-		git.buildSvnScript("http://svn.apache.org/repos/asf/hadoop/", 2);
+		git.buildSvnScript("http://svn.apache.org/repos/asf/avro/", 2);
 		git.start = System.currentTimeMillis();
 		git.read();
 		git.stop = System.currentTimeMillis();

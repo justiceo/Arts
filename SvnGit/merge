@@ -1,0 +1,17 @@
+#!/bin/bash
+
+if [ $# -eq 0 ]
+then
+	echo "Enter one or more files to merge"
+	exit
+fi
+
+merge_file=$( echo "$1.merge" )
+echo "" > $merge_file
+
+for item in $@
+do
+	cat $item >> $merge_file
+done
+
+
