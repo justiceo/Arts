@@ -10,3 +10,5 @@ cp src/SvnGit3_2.java ./
 javac SvnGit3_2.java
 java SvnGit3_2 $1 $2 $3
 
+#svn diff -c $1  file:///home/effortmetrics/repodump/mirr > $1
+
