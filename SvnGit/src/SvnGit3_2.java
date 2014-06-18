@@ -16,6 +16,7 @@ public class SvnGit3_2 extends Thread{
 	private int pos, neg, sum;
 	private String spos, sneg;
 	private String svnscript;
+	private String svnUrl;
 	String filePath;
 	private File file;
 	ProcessBuilder pb;
@@ -26,11 +27,12 @@ public class SvnGit3_2 extends Thread{
 
 	Commit commit = new Commit();
 
-	public SvnGit3_2(String src_file, int inst) throws IOException {
+	public SvnGit3_2(String src_file, String url, int inst) throws IOException {
 		instance = inst;
 		srcFile = src_file + "." + instance;
 		input = new Scanner(new BufferedReader(new FileReader(srcFile)));
 		output = new Formatter(srcFile + ".git" );
+		svnUrl = url;
 
 	}
 
@@ -46,7 +48,7 @@ public class SvnGit3_2 extends Thread{
 		String str = "";
 
 		int i = 0;
-		while (input.hasNext() && i < 100) {
+		while (input.hasNext()) {
 			line = input.nextLine();
 
 			if (line.contains("revision=")) {
@@ -100,6 +102,10 @@ public class SvnGit3_2 extends Thread{
 				insertions = 0;
 				deletions = 0;
 
+			}
+			if( i == 10000) {
+				System.out.println("current commit is " + commit.ID);
+				i=0;
 			}
 			i++;
 		} // end while
@@ -167,8 +173,8 @@ public class SvnGit3_2 extends Thread{
 				if (!holdFile.equals("")) {
 					output.format("...%s \t\t|  %5d %s%s \n", holdFile, sum,
 							spos, sneg);
-					System.out.printf("...%s \t\t|  %5d %s%s \n", holdFile,
-							sum, spos, sneg);
+					//System.out.printf("...%s \t\t|  %5d %s%s \n", holdFile,
+							//sum, spos, sneg);
 				}
 				// reset counters
 				pos = 0;
@@ -194,8 +200,7 @@ public class SvnGit3_2 extends Thread{
 		deletions += neg;
 		changeRatio();
 		output.format("...%s \t\t|  %5d %s%s \n", holdFile, sum, spos, sneg);
-		System.out
-				.printf("...%s \t\t|  %5d %s%s \n", holdFile, sum, spos, sneg);
+		//System.out.printf("...%s \t\t|  %5d %s%s \n", holdFile, sum, spos, sneg);
 
 		// close svndiff
 		closeFile(svndiff);
@@ -282,10 +287,12 @@ public class SvnGit3_2 extends Thread{
 	public static void main(String args[])  {
 
 		SvnGit3_2 git = null;
-		int instance = 1;
-		String source_file = "avro.log";
+		
+		String source_file = args[0];
+		String svnUrl = args[1];
+		int instance = Integer.parseInt(args[2]);
 		try {
-			git = new SvnGit3_2(source_file, instance);
+			git = new SvnGit3_2(source_file, svnUrl, instance);
 		} catch (IOException e1) {
 			// TODO Auto-generated catch block
 			e1.printStackTrace();
@@ -293,6 +300,7 @@ public class SvnGit3_2 extends Thread{
 		
 		git.start();
 		
+		/*
 		SvnGit3_2 git2 = null;
 		instance++;
 		try {
@@ -304,7 +312,18 @@ public class SvnGit3_2 extends Thread{
 		
 		git2.start();
 		
-		/*try {
+		SvnGit3_2 git3 = null;
+		instance++;
+		try {
+			git3 = new SvnGit3_2(source_file, instance);
+		} catch (IOException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		
+		git3.start();
+		
+		try {
 			git.buildCleanupScript();
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
@@ -316,7 +335,7 @@ public class SvnGit3_2 extends Thread{
 	public void run() {
 		
 		try {
-			buildSvnScript("http://svn.apache.org/repos/asf/avro/", instance);
+			buildSvnScript(svnUrl, instance);
 		} catch (FileNotFoundException e1) {
 			// TODO Auto-generated catch block
 			e1.printStackTrace();
@@ -326,10 +345,14 @@ public class SvnGit3_2 extends Thread{
 		start = System.currentTimeMillis();
 		try {
 			read();
-		} catch (IOException | InterruptedException e) {
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e){
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
+		
 		stop = System.currentTimeMillis();
 		diff = stop - start;
 		output.flush();

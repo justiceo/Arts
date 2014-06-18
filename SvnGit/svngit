@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ $# -eq 0 ]
+then
+	echo "Enter file name, svn url and instanceID"
+	exit
+fi
+
+cp src/SvnGit3_2.java ./
+javac SvnGit3_2.java
+java SvnGit3_2 $1 $2 $3
+
