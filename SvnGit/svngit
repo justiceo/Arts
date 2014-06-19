@@ -6,9 +6,13 @@ then
 	exit
 fi
 
-cp src/SvnGit3_2.java ./
-javac SvnGit3_2.java
-java SvnGit3_2 $1 $2 $3
+cp /bin/svnscript ./
+mv svnscript "svnscript$2"
+cp src/SvnGit4.java ./
+javac SvnGit4.java
+java SvnGit4 $1 $2
+
+
 
 #svn diff -c $1  file:///home/effortmetrics/repodump/mirr > $1
 

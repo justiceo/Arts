@@ -1,17 +1,69 @@
 #!/bin/bash
 
-if [ $# -eq 0 ]
+package="Merge"
+extension=".merge"
+remove="no"
+while test $# -gt 0; do
+        case "$1" in
+                -h|--help)
+                        echo "$package - merge different files into one file"
+                        echo " "
+                        echo "$package [options] application [arguments]"
+                        echo " "
+                        echo "-h, --help		show usage information"
+                        echo "-e, --ext      		specify the merge file extension"
+                        echo "-r, --remove      	remove original files after merge"
+                        exit 0
+                        ;;
+                -e)
+                        shift
+                        if test $# -gt 0; then
+                                extension=$1
+                        else
+                                echo "no extension specified"
+                                exit 1
+                        fi
+                        shift
+                        ;;
+                --ext*)
+                        extension=$1
+			echo "ext is $extension"
+                        shift
+                        ;;
+                -r)
+                        remove="yes"
+                        shift
+                        ;;
+                --remove*)
+                        remove="yes"
+                        shift
+                        ;;
+                *)
+                        break
+                        ;;
+        esac
+done
+
+if [ $# -lt 2 ]
 then
 	echo "Enter one or more files to merge"
 	exit
 fi
 
-merge_file=$( echo "$1.merge" )
+merge_file=$( echo "$1.$extension" )
 echo "" > $merge_file
 
 for item in $@
 do
 	cat $item >> $merge_file
 done
+
+if [ "$remove" == "yes" ]
+then
+	for item in $@
+	do
+		rm $item
+	done
+fi
 
 
