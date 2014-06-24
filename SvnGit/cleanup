@@ -3,54 +3,54 @@
 if [ -f 1* ]
 then
 	rm 1*
-done
+fi
 
 if [ -f 2* ]
 then
 	rm 2*
-done
+fi
 
 if [ -f 3* ]
 then
 	rm 3*
-done
+fi
 
 if [ -f 4* ]
 then
 	rm 4*
-done
+fi
 
 if [ -f 5* ]
 then
 	rm 5*
-done
+fi
 
 if [ -f 6* ]
 then
 	rm 6*
-done
+fi
 
 if [ -f 7* ]
 then
 	rm 7*
-done
+fi
 
 if [ -f 8* ]
 then
 	rm 8*
-done
+fi
 
 if [ -f 9* ]
 then
 	rm 9*
-done
+fi
 
 if [ -f svnscript* ]
 then
 	rm svnscript*
-done
+fi
 
 if [ -f SvnGit* ]
 then
 	rm SvnGit*
-done
+fi
