@@ -1,0 +1,56 @@
+#!/bin/bash
+
+if [ -f 1* ]
+then
+	rm 1*
+done
+
+if [ -f 2* ]
+then
+	rm 2*
+done
+
+if [ -f 3* ]
+then
+	rm 3*
+done
+
+if [ -f 4* ]
+then
+	rm 4*
+done
+
+if [ -f 5* ]
+then
+	rm 5*
+done
+
+if [ -f 6* ]
+then
+	rm 6*
+done
+
+if [ -f 7* ]
+then
+	rm 7*
+done
+
+if [ -f 8* ]
+then
+	rm 8*
+done
+
+if [ -f 9* ]
+then
+	rm 9*
+done
+
+if [ -f svnscript* ]
+then
+	rm svnscript*
+done
+
+if [ -f SvnGit* ]
+then
+	rm SvnGit*
+done
