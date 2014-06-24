@@ -74,14 +74,14 @@ function fragment() {
 }
 
 function cleanup() {
-	if [ $2 -gt 2 ]
+	if [[ $1 > 2 ]]
 	then
 		rm *.frag
 	fi
 }
 
 fragment $1 $2
-cleanup
+cleanup $2
 
 
 
